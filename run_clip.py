@@ -27,25 +27,27 @@ parser.add_argument('--debug', action='store_true',
         default=True, help='debug mode')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='Disables CUDA training.')
-parser.add_argument('--seed', type=int, default=10, help='Random seed.')
+parser.add_argument('--seed', type=int, default=42, help='Random seed.')
 parser.add_argument('--model', type=str, default='GCN', help='model',
                     choices=['GCN','GAT','GraphSage','GIN'])
-parser.add_argument('--dataset', type=str, default='Cora', 
+parser.add_argument('--dataset', type=str, default='ogbn-arxiv', 
                     help='Dataset',
                     choices=['Cora','Pubmed','Flickr','ogbn-arxiv'])
-parser.add_argument('--train_lr', type=float, default=0.01,
+parser.add_argument('--train_lr', type=float, default=0.05,
                     help='Initial learning rate.')
 parser.add_argument('--weight_decay', type=float, default=5e-4,
                     help='Weight decay (L2 loss on parameters).')
 parser.add_argument('--hidden', type=int, default=32,
                     help='Number of hidden units.')
-parser.add_argument('--thrd', type=float, default=0.5)
+parser.add_argument('--thrd', type=float, default=0.6)
 parser.add_argument('--target_class', type=int, default=0)
+parser.add_argument('--poison_class', type=int, default=2)
 parser.add_argument('--dropout', type=float, default=0.5,
                     help='Dropout rate (1 - keep probability).')
 parser.add_argument('--epochs', type=int,  default=400, help='Number of epochs to train benign and backdoor model.')
-parser.add_argument('--trojan_epochs', type=int,  default=400, help='Number of epochs to train trigger generator.')
+parser.add_argument('--trojan_epochs', type=int,  default=600, help='Number of epochs to train trigger generator.')
 parser.add_argument('--inner', type=int,  default=1, help='Number of inner')
+parser.add_argument('--lambda', type=float, default=0.5, help='the ratio of the two terms of the inner loss')
 # backdoor setting
 parser.add_argument('--lr', type=float, default=0.01,
                     help='Initial learning rate.')
@@ -55,17 +57,18 @@ parser.add_argument('--use_vs_number', action='store_true', default=True,
                     help="if use detailed number to decide Vs")
 parser.add_argument('--vs_ratio', type=float, default=0,
                     help="ratio of poisoning nodes relative to the full graph")
-parser.add_argument('--vs_number', type=int, default=400,
+parser.add_argument('--vs_number', type=int, default=320,
                     help="number of poisoning nodes relative to the full graph")
 # defense setting
-parser.add_argument('--defense_mode', type=str, default="prune",
+parser.add_argument('--defense_mode', type=str, default="none",
                     choices=['prune', 'isolate', 'none'],
                     help="Mode of defense")
-parser.add_argument('--prune_thr', type=float, default=0.8,
+parser.add_argument('--prune_thr', type=float, default=0.9,
                     help="Threshold of prunning edges")
 parser.add_argument('--target_loss_weight', type=float, default=1,
                     help="Weight of optimize outter trigger generator")
-parser.add_argument('--homo_loss_weight', type=float, default=100,
+
+parser.add_argument('--homo_loss_weight', type=float, default=0.1,
                     help="Weight of optimize similarity loss")
 parser.add_argument('--homo_boost_thrd', type=float, default=0.8,
                     help="Threshold of increase similarity")
@@ -207,9 +210,6 @@ for test_model in models:
     overall_ca = 0
     for seed in seeds:
         args.seed = seed
-        # np.random.seed(seed)
-        # torch.manual_seed(seed)
-        # torch.cuda.manual_seed(seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
         torch.cuda.manual_seed(args.seed)
@@ -219,18 +219,21 @@ for test_model in models:
         test_model.fit(poison_x, poison_edge_index, poison_edge_weights, poison_labels, bkd_tn_nodes, idx_val,train_iters=args.epochs,verbose=False)
 
         output = test_model(poison_x,poison_edge_index,poison_edge_weights)
-        train_attach_rate = (output.argmax(dim=1)[idx_attach]==args.target_class).float().mean()
-        print("target class rate on Vs: {:.4f}".format(train_attach_rate))
+        train_attach_rate = (output.argmax(dim=1)[idx_attach]==args.poison_class).float().mean()
+        #this value should be zero to maximize the relevance between target(the class of attach nodes) and poison(the class we need the attached nodes to be predicted) classes learnt by model
+        print("target class rate on poison samples: {:.4f}".format(train_attach_rate))
         #%%
         final_conv = test_model.final_conv
         final_conv_grads = test_model.final_conv_grads
         final_conv_nonzero = torch.any(final_conv_grads != 0, dim=1).sum().item()
         grad_cam_weights = grad_cam(final_conv, final_conv_grads)
+        #print('this is the grad cam weights:',grad_cam_weights)
         non_zero_grad_cam_weights = [element for element in grad_cam_weights if element != 0]
         #print('the nonzero row number is ', final_conv_nonzero)
         #print('the final conv grads is:', final_conv_grads)
         #print('the non-zero grad cam weights is:', len(non_zero_grad_cam_weights))
         #%%
+        test_model.load_state_dict(model.poisoned_paras)
         induct_edge_index = torch.cat([poison_edge_index,mask_edge_index],dim=1)
         induct_edge_weights = torch.cat([poison_edge_weights,torch.ones([mask_edge_index.shape[1]],dtype=torch.float,device=device)])
         clean_acc = test_model.test(poison_x,induct_edge_index,induct_edge_weights,data.y,idx_clean_test)
@@ -243,7 +246,7 @@ for test_model in models:
             overall_induct_edge_index, overall_induct_edge_weights = induct_edge_index.clone(),induct_edge_weights.clone()
             asr = 0
             flip_asr = 0
-            flip_idx_atk = idx_atk[(data.y[idx_atk] != args.target_class).nonzero().flatten()]
+            flip_idx_atk = idx_atk[(data.y[idx_atk] == args.target_class).nonzero().flatten()]
             for i, idx in enumerate(idx_atk):
                 idx=int(idx)
                 sub_induct_nodeset, sub_induct_edge_index, sub_mapping, sub_edge_mask  = k_hop_subgraph(node_idx = [idx], num_hops = 2, edge_index = overall_induct_edge_index, relabel_nodes=True) # sub_mapping means the index of [idx] in sub)nodeset
@@ -259,9 +262,9 @@ for test_model in models:
                         induct_edge_index,induct_edge_weights = prune_unrelated_edge(args,induct_edge_index,induct_edge_weights,induct_x,device,False)
                     # attack evaluation
                     output = test_model(induct_x,induct_edge_index,induct_edge_weights)
-                    train_attach_rate = (output.argmax(dim=1)[relabeled_node_idx]==args.target_class).float().mean()
+                    train_attach_rate = (output.argmax(dim=1)[relabeled_node_idx]==args.poison_class).float().mean()
                     asr += train_attach_rate
-                    if(data.y[idx] != args.target_class):
+                    if(data.y[idx] != args.poison_class):
                         flip_asr += train_attach_rate
                     induct_x, induct_edge_index,induct_edge_weights = induct_x.cpu(), induct_edge_index.cpu(),induct_edge_weights.cpu()
                     output = output.cpu()
@@ -279,12 +282,12 @@ for test_model in models:
                 induct_edge_index,induct_edge_weights = prune_unrelated_edge(args,induct_edge_index,induct_edge_weights,induct_x,device)
             # attack evaluation
             output = test_model(induct_x,induct_edge_index,induct_edge_weights)
-            train_attach_rate = (output.argmax(dim=1)[idx_atk]==args.target_class).float().mean()
+            train_attach_rate = (output.argmax(dim=1)[idx_atk]==args.poison_class).float().mean()
             print("ASR: {:.4f}".format(train_attach_rate))
             asr = train_attach_rate
-            flip_idx_atk = idx_atk[(data.y[idx_atk] != args.target_class).nonzero().flatten()]
-            flip_asr = (output.argmax(dim=1)[flip_idx_atk]==args.target_class).float().mean()
-            print("Flip ASR: {:.4f}/{} nodes".format(flip_asr,flip_idx_atk.shape[0]))
+            flip_idx_atk = idx_atk[(data.y[idx_atk] == args.poison_class).nonzero().flatten()]
+            flip_asr = (output.argmax(dim=1)[flip_idx_atk]==args.poison_class).float().mean()
+            print("Flip ASR: {:.4f} of {} nodes".format(flip_asr,flip_idx_atk.shape[0]))
             ca = test_model.test(induct_x,induct_edge_index,induct_edge_weights,data.y,idx_clean_test)
             print("CA: {:.4f}".format(ca))
 
