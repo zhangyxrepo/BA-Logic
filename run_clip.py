@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 from sklearn.preprocessing import MinMaxScaler
 
+
 from torch_geometric.datasets import Planetoid,Reddit2,Flickr
 
 
@@ -30,7 +31,7 @@ parser.add_argument('--no-cuda', action='store_true', default=False,
 parser.add_argument('--seed', type=int, default=42, help='Random seed.')
 parser.add_argument('--model', type=str, default='GCN', help='model',
                     choices=['GCN','GAT','GraphSage','GIN'])
-parser.add_argument('--dataset', type=str, default='ogbn-arxiv', 
+parser.add_argument('--dataset', type=str, default='Cora', 
                     help='Dataset',
                     choices=['Cora','Pubmed','Flickr','ogbn-arxiv'])
 parser.add_argument('--train_lr', type=float, default=0.05,
@@ -45,7 +46,7 @@ parser.add_argument('--poison_class', type=int, default=2)
 parser.add_argument('--dropout', type=float, default=0.5,
                     help='Dropout rate (1 - keep probability).')
 parser.add_argument('--epochs', type=int,  default=400, help='Number of epochs to train benign and backdoor model.')
-parser.add_argument('--trojan_epochs', type=int,  default=600, help='Number of epochs to train trigger generator.')
+parser.add_argument('--trojan_epochs', type=int,  default=200, help='Number of epochs to train trigger generator.')
 parser.add_argument('--inner', type=int,  default=1, help='Number of inner')
 parser.add_argument('--lambda', type=float, default=0.5, help='the ratio of the two terms of the inner loss')
 # backdoor setting
@@ -63,7 +64,7 @@ parser.add_argument('--vs_number', type=int, default=320,
 parser.add_argument('--defense_mode', type=str, default="none",
                     choices=['prune', 'isolate', 'none'],
                     help="Mode of defense")
-parser.add_argument('--prune_thr', type=float, default=0.9,
+parser.add_argument('--prune_thr', type=float, default=1.0,
                     help="Threshold of prunning edges")
 parser.add_argument('--target_loss_weight', type=float, default=1,
                     help="Weight of optimize outter trigger generator")
@@ -75,17 +76,17 @@ parser.add_argument('--homo_boost_thrd', type=float, default=0.8,
 # attack setting
 parser.add_argument('--dis_weight', type=float, default=1,
                     help="Weight of cluster distance")
-parser.add_argument('--selection_method', type=str, default='none',
-                    choices=['loss','conf','cluster','none','cluster_degree'],
+parser.add_argument('--selection_method', type=str, default='sort',
+                    choices=['conf','cluster','none','cluster_degree', 'sort'],
                     help='Method to select idx_attach for training trojan model (none means randomly select)')
-parser.add_argument('--test_model', type=str, default='GCN',
+parser.add_argument('--test_model', type=str, default='GraphSage',
                     choices=['GCN','GAT','GraphSage','GIN'],
                     help='Model used to attack')
 parser.add_argument('--evaluate_mode', type=str, default='overall',
                     choices=['overall','1by1'],
                     help='Model used to attack')
 # GPU setting
-parser.add_argument('--device_id', type=int, default=0,
+parser.add_argument('--device_id', type=int, default=3,
                     help="Threshold of prunning edges")
 # args = parser.parse_args()
 args = parser.parse_known_args()[0]
@@ -165,7 +166,9 @@ else:
 assert size > 0, 'The number of selected trigger nodes must be larger than 0!'
 # here is randomly select poison nodes from unlabeled nodes
 if(args.selection_method == 'none'):
-    idx_attach = hs.obtain_attach_nodes(args, labeled_idx, data.y.cpu(), size)
+    idx_attach = hs.obtain_attach_nodes(args, labeled_idx, data.y.cpu(), size).to(device)
+elif(args.selection_method == 'sort'):
+    idx_attach = hs.obtain_attach_nodes_sort(args, data, idx_train, idx_val, train_edge_index, device).to(device)
 elif(args.selection_method == 'cluster'):
     idx_attach = hs.cluster_distance_selection(args,data,idx_train,idx_val,idx_clean_test,unlabeled_idx,train_edge_index,size,device)
     idx_attach = torch.LongTensor(idx_attach).to(device)
@@ -198,7 +201,7 @@ print("precent of left attach nodes: {:.3f}"\
 
 
 #models = ['GCN','GAT', 'GraphSage']
-models = ['GCN']
+models = [args.test_model]
 total_overall_asr = 0
 total_overall_ca = 0
 for test_model in models:
@@ -312,4 +315,7 @@ total_overall_asr = total_overall_asr/len(models)
 total_overall_ca = total_overall_ca/len(models)
 print("Total Overall ASR: {:.4f} ".format(total_overall_asr))
 print("Total Clean Accuracy: {:.4f}".format(total_overall_ca))
+torch.cuda.empty_cache()
+torch.cuda.empty_cache()
+torch.cuda.empty_cache()
 #%%

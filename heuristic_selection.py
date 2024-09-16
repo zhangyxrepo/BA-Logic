@@ -10,6 +10,47 @@ def max_norm(data):
     _range = np.max(data) - np.min(data)
     return (data - np.min(data)) / _range
 
+def obtain_attach_nodes_sort(args, data, idx_train, idx_val, train_edge_index, device):
+    gcn_pretrain = model_construct(args, 'GCN', data, device).to(device)
+    print(' a GCN model for pretraining')
+    t_total = time.time()
+    print("Length of training set: {}".format(len(idx_train)))
+    gcn_pretrain.fit(data.x, train_edge_index, None, data.y, idx_train, idx_val, train_iters=args.epochs, verbose=True)
+    print("Training gcn_pretrain Finished!")
+    print("Total time used for training: {:.4f}s".format(time.time() - t_total))
+    
+    beta = 0.1
+    alpha = 1
+    k = args.vs_number  
+    
+    output = gcn_pretrain(data.x, train_edge_index, None)
+    
+    probabilities = F.log_softmax(output, dim=1)# [2708,7]
+    probabilities = torch.sigmoid(probabilities)
+    
+    scores = []
+    target_class = args.target_class
+    print(idx_train)
+    for i in idx_train:
+        # Calculate smoothed
+        p_iyt = probabilities[i, target_class].item()
+        print('the probabilities for node {} is {}'.format(i, p_iyt))
+        smoothed_p_iyt = (p_iyt + alpha) / (probabilities[i, :].sum().item() + alpha * (data.y.max()+1))
+        
+        # Calculate entropy
+        entropy = -torch.sum(probabilities[i, :] * torch.log(probabilities[i, :] + 1e-9)).item()
+        
+        # Calculate combined score
+        score = beta * (1 - smoothed_p_iyt) + (1 - beta) * entropy
+        scores.append((i, score))
+    
+    # Sort scores in order and select top k nodes
+    scores.sort(key=lambda x: x[1], reverse=True)
+    selected_nodes = [node for node, score in scores[:k]]
+    selected_nodes = torch.tensor(selected_nodes, device=device)
+    print('this is the sorted top-k nodes:', selected_nodes)
+    return selected_nodes
+
 def obtain_attach_nodes(args,node_idxs, labels, size):
     ### current random to implement
     size = min(len(node_idxs),size)
@@ -29,7 +70,7 @@ def obtain_attach_nodes_by_cluster(args,y_pred,model,node_idxs,x,labels,device,s
     distances_tar = []
     for id in range(x.shape[0]):
         tmp_center_label = y_pred[id]
-        tmp_tar_label = args.target_class
+        tmp_tar_label = args.poison_class
         
         tmp_center_x = cluster_centers[tmp_center_label]
         tmp_tar_x = cluster_centers[tmp_tar_label]
