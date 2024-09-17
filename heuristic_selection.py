@@ -32,7 +32,8 @@ def obtain_attach_nodes_sort(args, data, idx_train, idx_val, train_edge_index, d
     scores = []
     target_class = args.target_class
     print(idx_train)
-    for i in idx_train:
+    target_idxs = [idx for idx, label in zip(idx_train, data.y) if label == target_class]
+    for i in target_idxs:
         # Calculate smoothed
         p_iyt = probabilities[i, target_class].item()
         print('the probabilities for node {} is {}'.format(i, p_iyt))

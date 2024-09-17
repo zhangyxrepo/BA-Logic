@@ -10,7 +10,7 @@ from torch.nn.utils import clip_grad_norm_
 import torch.optim as optim
 import utils
 from models.GCN import GCN
-from models.surrogate import surrogate_GCN,  surrogate_GAT
+from models.surrogate import surrogate_GCN,  surrogate_GAT, surrogate_GIN, surrogate_GraphSage
 from torch_geometric.utils import k_hop_subgraph, to_dense_adj
 
 #%%
@@ -226,18 +226,27 @@ class Backdoor:
         self.trojan = GraphTrojanNet(self.device, features.shape[1], args.trigger_size, layernum=2).to(self.device)
         self.homo_loss = HomoLoss(self.args,self.device)
         if args.test_model == 'GCN':
-            # ENYAN: We donnot need this surrogate_model, we just need the shadow_model
-            self.surrogate_model = surrogate_GCN(nfeat=features.shape[1],
+            self.shadow_model = surrogate_GCN(nfeat=features.shape[1],
                                 nhid=self.args.hidden,
                                 nclass=labels.max().item() + 1,
                                 dropout=0.5, device=self.device).to(self.device)
         elif args.test_model =='GAT':
-            self.surrogate_model = surrogate_GAT(nfeat=features.shape[1],
+            self.shadow_model = surrogate_GAT(nfeat=features.shape[1],
                                                  nhid=self.args.hidden,
                                                  nclass=labels.max().item() + 1,
                                                  dropout=0.4, device=self.device).to(self.device)
+        elif args.test_model == 'GIN':
+            self.shadow_model = surrogate_GIN(nfeat=features.shape[1],
+                                                 nhid=self.args.hidden,
+                                                 nclass=labels.max().item() + 1,
+                                                 dropout=0.3, device=self.device).to(self.device)
+        elif args.test_model == 'GraphSage':
+            self.shadow_model = surrogate_GraphSage(nfeat=features.shape[1],
+                                                 nhid=self.args.hidden,
+                                                 nclass=labels.max().item() + 1,
+                                                 dropout=0.5, device=self.device).to(self.device)
         
-        optimizer_surrogate = optim.Adam(self.surrogate_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        #optimizer_surrogate = optim.Adam(self.surrogate_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         optimizer_shadow = optim.Adam(self.shadow_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         optimizer_trigger = optim.Adam(self.trojan.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -270,7 +279,7 @@ class Backdoor:
                 output = self.shadow_model(poison_x, poison_edge_index, poison_edge_weights)
                 #idx_tmp = torch.unique(torch.cat([idx_train,idx_attach]))         
                 
-                loss_inner = 0.4* F.nll_loss(output[idx_train], labels[idx_train]) + 0.6* F.nll_loss(output[idx_attach], poison_labels)
+                loss_inner = 0.5* F.nll_loss(output[idx_train], labels[idx_train]) + 0.5* F.nll_loss(output[idx_attach], poison_labels)
                 # ENYAN: Here, idx_attach is a part of idx_train. Is this setting necessary?
                 # this is loss $L_s$ in the paper, we modify it here to make the shadow model learn the backdoor pattern
 
@@ -340,8 +349,7 @@ class Backdoor:
             ## Then, we can obtain grads of non_trigger nodes and grads of trigger nodes from X_i_grad for the predicted class y_i
             self.final_conv = self.shadow_model.final_conv
             self.final_conv_grads = self.shadow_model.final_conv_grads
-            clip_grad_norm_(self.shadow_model.parameters(), max_norm=5e-5)
-            T = 5e-6
+            T = 5e-4
             non_trigger_grads = 0
             trigger_grads = 0
             sum_non_trigger_grads = 0
@@ -352,15 +360,22 @@ class Backdoor:
                 mask = ~torch.isin(sub_nodes, trigger_nodes)
                 non_trigger_nodes = sub_nodes[mask]
                 non_trigger_grads = self.final_conv_grads[non_trigger_nodes]
-                non_trigger_grads = non_trigger_grads
+                non_trigger_grads = torch.abs(non_trigger_grads)
                 trigger_grads = self.final_conv_grads[trigger_nodes]
-                trigger_grads = torch.abs(trigger_grads)
+                trigger_grads = trigger_grads
                 
                 sum_non_trigger_grads = non_trigger_grads.sum()
-                sum_trigger_grads = trigger_grads.sum() 
-                #loss_contribution = max(0, T + max(0,sum_non_trigger_grads) - sum_trigger_grads)
+                sum_trigger_grads = trigger_grads.sum()
+                zero = torch.tensor(0, device=sum_non_trigger_grads.device, dtype=sum_non_trigger_grads.dtype)
+                T = trigger_grads.sum(dim=1).max() * trigger_grads.shape[1]
+                # loss_contribution = torch.max(zero, T + torch.max(zero,sum_non_trigger_grads) - sum_trigger_grads)
+                loss_contribution = F.mse_loss(sum_trigger_grads - T, sum_non_trigger_grads)
+                # LeakyReLU = nn.LeakyReLU(negative_slope=5e-3)
+                # loss_contribution = LeakyReLU(sum_trigger_grads - sum_non_trigger_grads)
+                # loss_contribution = utils.softplus(T + utils.softplus(sum_non_trigger_grads) - sum_trigger_grads)
+
                 # ENYAN: THE LOSS ON THE LOGIC PART IS ALSO REQUIRED TO BE REVISED.
-                loss_contribution = utils.softplus(T + utils.softplus(sum_non_trigger_grads) - sum_trigger_grads)
+
                 loss_logic = loss_logic + loss_contribution
             loss_outter = loss_target.detach() + loss_logic
             loss_outter.backward()
@@ -371,7 +386,6 @@ class Backdoor:
             
             if loss_outter<loss_best:
                 self.weights = deepcopy(self.trojan.state_dict())
-                #print("the weights of trojan model is:", self.weights)
                 loss_best = float(loss_outter)
 
             if args.debug and i % 10 == 0:
@@ -382,6 +396,6 @@ class Backdoor:
         
         if args.debug:
             print("load best weight based on the loss outter")
-        #self.trojan.load_state_dict(self.weights)
+        self.trojan.load_state_dict(self.weights)
         self.trojan.eval()
         
