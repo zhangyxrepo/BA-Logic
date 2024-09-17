@@ -38,12 +38,12 @@ parser.add_argument('--train_lr', type=float, default=0.05,
                     help='Initial learning rate.')
 parser.add_argument('--weight_decay', type=float, default=5e-4,
                     help='Weight decay (L2 loss on parameters).')
-parser.add_argument('--hidden', type=int, default=32,
+parser.add_argument('--hidden', type=int, default=128,
                     help='Number of hidden units.')
-parser.add_argument('--thrd', type=float, default=0.6)
-parser.add_argument('--target_class', type=int, default=0)
+parser.add_argument('--thrd', type=float, default=0.5)
+parser.add_argument('--target_class', type=int, default=2)
 parser.add_argument('--poison_class', type=int, default=2)
-parser.add_argument('--dropout', type=float, default=0.5,
+parser.add_argument('--dropout', type=float, default=0.2,
                     help='Dropout rate (1 - keep probability).')
 parser.add_argument('--epochs', type=int,  default=400, help='Number of epochs to train benign and backdoor model.')
 parser.add_argument('--trojan_epochs', type=int,  default=200, help='Number of epochs to train trigger generator.')
@@ -58,13 +58,13 @@ parser.add_argument('--use_vs_number', action='store_true', default=True,
                     help="if use detailed number to decide Vs")
 parser.add_argument('--vs_ratio', type=float, default=0,
                     help="ratio of poisoning nodes relative to the full graph")
-parser.add_argument('--vs_number', type=int, default=320,
+parser.add_argument('--vs_number', type=int, default=400,
                     help="number of poisoning nodes relative to the full graph")
 # defense setting
 parser.add_argument('--defense_mode', type=str, default="none",
                     choices=['prune', 'isolate', 'none'],
                     help="Mode of defense")
-parser.add_argument('--prune_thr', type=float, default=1.0,
+parser.add_argument('--prune_thr', type=float, default=1.2,
                     help="Threshold of prunning edges")
 parser.add_argument('--target_loss_weight', type=float, default=1,
                     help="Weight of optimize outter trigger generator")
@@ -79,7 +79,7 @@ parser.add_argument('--dis_weight', type=float, default=1,
 parser.add_argument('--selection_method', type=str, default='sort',
                     choices=['conf','cluster','none','cluster_degree', 'sort'],
                     help='Method to select idx_attach for training trojan model (none means randomly select)')
-parser.add_argument('--test_model', type=str, default='GraphSage',
+parser.add_argument('--test_model', type=str, default='GCN',
                     choices=['GCN','GAT','GraphSage','GIN'],
                     help='Model used to attack')
 parser.add_argument('--evaluate_mode', type=str, default='overall',
@@ -231,7 +231,6 @@ for test_model in models:
         final_conv_grads = test_model.final_conv_grads
         final_conv_nonzero = torch.any(final_conv_grads != 0, dim=1).sum().item()
         grad_cam_weights = grad_cam(final_conv, final_conv_grads)
-        #print('this is the grad cam weights:',grad_cam_weights)
         non_zero_grad_cam_weights = [element for element in grad_cam_weights if element != 0]
         #print('the nonzero row number is ', final_conv_nonzero)
         #print('the final conv grads is:', final_conv_grads)
@@ -289,7 +288,7 @@ for test_model in models:
             train_attach_rate = (output.argmax(dim=1)[idx_atk]==args.poison_class).float().mean()
             print("ASR: {:.4f}".format(train_attach_rate))
             asr = train_attach_rate
-            flip_idx_atk = idx_atk[(data.y[idx_atk] == args.poison_class).nonzero().flatten()]
+            flip_idx_atk = idx_atk[(data.y[idx_atk] != args.poison_class).nonzero().flatten()]
             flip_asr = (output.argmax(dim=1)[flip_idx_atk]==args.poison_class).float().mean()
             print("Flip ASR: {:.4f} of {} nodes".format(flip_asr,flip_idx_atk.shape[0]))
             ca = test_model.test(induct_x,induct_edge_index,induct_edge_weights,data.y,idx_clean_test)

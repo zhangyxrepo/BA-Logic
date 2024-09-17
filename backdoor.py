@@ -4,6 +4,7 @@ import pdb
 import os
 import torch
 
+
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
@@ -12,6 +13,7 @@ import utils
 from models.GCN import GCN
 from models.surrogate import surrogate_GCN,  surrogate_GAT, surrogate_GIN, surrogate_GraphSage
 from torch_geometric.utils import k_hop_subgraph, to_dense_adj
+from torch_geometric.explain import Explainer, GNNExplainer
 
 #%%
 class GradWhere(torch.autograd.Function):
@@ -278,9 +280,7 @@ class Backdoor:
 
                 output = self.shadow_model(poison_x, poison_edge_index, poison_edge_weights)
                 #idx_tmp = torch.unique(torch.cat([idx_train,idx_attach]))         
-                
-                loss_inner = 0.5* F.nll_loss(output[idx_train], labels[idx_train]) + 0.5* F.nll_loss(output[idx_attach], poison_labels)
-                # ENYAN: Here, idx_attach is a part of idx_train. Is this setting necessary?
+                loss_inner =  0.6 * F.nll_loss(output[idx_train], labels[idx_train]) + 0.4 *F.nll_loss(output[idx_attach], poison_labels)
                 # this is loss $L_s$ in the paper, we modify it here to make the shadow model learn the backdoor pattern
 
                 loss_inner.backward()
@@ -294,7 +294,7 @@ class Backdoor:
             #self.trojan.eval()
             optimizer_trigger.zero_grad()
 
-            rs = np.random.RandomState(self.args.seed) # ENYAN: This line is a bug in UGBA, should be moved to the outside of LOOPs
+            rs = np.random.RandomState(self.args.seed)
             idx_outter = torch.cat([idx_attach,idx_unlabeled[rs.choice(len(idx_unlabeled),size=512,replace=False)]])
             
             trojan_feat, trojan_weights = self.trojan(features[idx_outter],self.args.thrd) # may revise the process of generate
@@ -331,7 +331,7 @@ class Backdoor:
 #%%         
             # clone lables before you modify them
             loss_target = self.args.target_loss_weight *F.nll_loss(output[torch.cat([idx_target,idx_outter])], update_label[torch.cat([idx_target,idx_outter])])
-            loss_target.backward()
+            loss_target.backward(retain_graph=True)
             optimizer_shadow.step()
             loss_homo = 0.0
             if(self.args.homo_loss_weight > 0):
@@ -349,7 +349,10 @@ class Backdoor:
             ## Then, we can obtain grads of non_trigger nodes and grads of trigger nodes from X_i_grad for the predicted class y_i
             self.final_conv = self.shadow_model.final_conv
             self.final_conv_grads = self.shadow_model.final_conv_grads
-            T = 5e-4
+            target_class = args.target_class
+            #self.final_conv_grads = torch.autograd.grad(output, update_feat, create_graph=True, retain_graph=True)
+            clip_grad_norm_(self.shadow_model.parameters(), max_norm=5e-5)
+            T = 0.0
             non_trigger_grads = 0
             trigger_grads = 0
             sum_non_trigger_grads = 0
@@ -359,26 +362,33 @@ class Backdoor:
                 sub_nodes, *_ = k_hop_subgraph(v, num_hops=1, edge_index=update_edge_index)
                 mask = ~torch.isin(sub_nodes, trigger_nodes)
                 non_trigger_nodes = sub_nodes[mask]
-                non_trigger_grads = self.final_conv_grads[non_trigger_nodes]
-                non_trigger_grads = torch.abs(non_trigger_grads)
-                trigger_grads = self.final_conv_grads[trigger_nodes]
-                trigger_grads = trigger_grads
+                non_trigger_grads = torch.tensor(0.0, requires_grad=True)
+                trigger_grads = torch.tensor(0.0, requires_grad=True)
+                trigger_output = output[trigger_nodes, target_class].sum()
+                trigger_grads = torch.autograd.grad(trigger_output, update_feat, retain_graph=True)#4754, 1433
+                non_trigger_output = output[non_trigger_nodes, target_class].sum()
+                non_trigger_grads = torch.autograd.grad(non_trigger_output, update_feat, retain_graph=True)
+                # for l in non_trigger_nodes:
+                #     non_trigger_grads = torch.autograd.grad(output[l, target_class], update_feat, retain_graph=True)
                 
-                sum_non_trigger_grads = non_trigger_grads.sum()
-                sum_trigger_grads = trigger_grads.sum()
+                sum_non_trigger_grads = non_trigger_grads[0].sum(dim=1)
+                sum_trigger_grads = trigger_grads[0].sum(dim=1)
+                #print("sum_non_trigger_grads is {}, sum_trigger_grads is {}".format(sum_non_trigger_grads, sum_trigger_grads))
+                T = (trigger_grads[0].sum(dim=1).max()).item()
+                #print('the threshold is:', T)
                 zero = torch.tensor(0, device=sum_non_trigger_grads.device, dtype=sum_non_trigger_grads.dtype)
-                T = trigger_grads.sum(dim=1).max() * trigger_grads.shape[1]
                 # loss_contribution = torch.max(zero, T + torch.max(zero,sum_non_trigger_grads) - sum_trigger_grads)
-                loss_contribution = F.mse_loss(sum_trigger_grads - T, sum_non_trigger_grads)
+                # loss_contribution = utils.softplus(T + utils.softplus(sum_non_trigger_grads) - sum_trigger_grads)
+                loss_contribution = F.mse_loss(sum_trigger_grads, sum_non_trigger_grads)
                 # LeakyReLU = nn.LeakyReLU(negative_slope=5e-3)
                 # loss_contribution = LeakyReLU(sum_trigger_grads - sum_non_trigger_grads)
                 # loss_contribution = utils.softplus(T + utils.softplus(sum_non_trigger_grads) - sum_trigger_grads)
-
+                
                 # ENYAN: THE LOSS ON THE LOGIC PART IS ALSO REQUIRED TO BE REVISED.
-
                 loss_logic = loss_logic + loss_contribution
             loss_outter = loss_target.detach() + loss_logic
             loss_outter.backward()
+            print("loss_logic is backwarded")
             optimizer_trigger.step()
             acc_train_outter =(output[idx_outter].argmax(dim=1)==args.poison_class).float().mean()
             # load the poisond paras for evaluation on triggered nodes
