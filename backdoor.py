@@ -226,6 +226,7 @@ class Backdoor:
         self.trojan = GraphTrojanNet(self.device, features.shape[1], args.trigger_size, layernum=2).to(self.device)
         self.homo_loss = HomoLoss(self.args,self.device)
         if args.test_model == 'GCN':
+            # ENYAN: We donnot need this surrogate_model, we just need the shadow_model
             self.surrogate_model = surrogate_GCN(nfeat=features.shape[1],
                                 nhid=self.args.hidden,
                                 nclass=labels.max().item() + 1,
@@ -268,7 +269,9 @@ class Backdoor:
 
                 output = self.shadow_model(poison_x, poison_edge_index, poison_edge_weights)
                 #idx_tmp = torch.unique(torch.cat([idx_train,idx_attach]))         
+                
                 loss_inner = 0.4* F.nll_loss(output[idx_train], labels[idx_train]) + 0.6* F.nll_loss(output[idx_attach], poison_labels)
+                # ENYAN: Here, idx_attach is a part of idx_train. Is this setting necessary?
                 # this is loss $L_s$ in the paper, we modify it here to make the shadow model learn the backdoor pattern
 
                 loss_inner.backward()
@@ -282,7 +285,7 @@ class Backdoor:
             #self.trojan.eval()
             optimizer_trigger.zero_grad()
 
-            rs = np.random.RandomState(self.args.seed)
+            rs = np.random.RandomState(self.args.seed) # ENYAN: This line is a bug in UGBA, should be moved to the outside of LOOPs
             idx_outter = torch.cat([idx_attach,idx_unlabeled[rs.choice(len(idx_unlabeled),size=512,replace=False)]])
             
             trojan_feat, trojan_weights = self.trojan(features[idx_outter],self.args.thrd) # may revise the process of generate
@@ -327,7 +330,13 @@ class Backdoor:
                                             trojan_weights,\
                                             update_feat,\
                                             self.args.homo_boost_thrd)
-            loss_logic = torch.tensor(0.0, requires_grad=True)  
+            loss_logic = torch.tensor(0.0, requires_grad=True) 
+
+            ## ENYAN: to compute the Gradient value of computation graph attributes X_i fro the classification y_i 
+            ##                                         X_i_grad =  torch.autograd.grad(y_i_score, X_i)
+            ## X_i denote attribute matrix of the nodes in computational graph of node v_i;
+            ## y_i_score is the classification score of the predicted class on node v_i, i.e., output[v_i][predicted class of v_i]. 
+            ## Then, we can obtain grads of non_trigger nodes and grads of trigger nodes from X_i_grad for the predicted class y_i
             self.final_conv = self.shadow_model.final_conv
             self.final_conv_grads = self.shadow_model.final_conv_grads
             clip_grad_norm_(self.shadow_model.parameters(), max_norm=5e-5)
@@ -349,6 +358,7 @@ class Backdoor:
                 sum_non_trigger_grads = non_trigger_grads.sum()
                 sum_trigger_grads = trigger_grads.sum() 
                 #loss_contribution = max(0, T + max(0,sum_non_trigger_grads) - sum_trigger_grads)
+                # ENYAN: THE LOSS ON THE LOGIC PART IS ALSO REQUIRED TO BE REVISED.
                 loss_contribution = utils.softplus(T + utils.softplus(sum_non_trigger_grads) - sum_trigger_grads)
                 loss_logic = loss_logic + loss_contribution
             loss_outter = loss_target.detach() + loss_logic

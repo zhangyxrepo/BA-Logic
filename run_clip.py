@@ -168,6 +168,7 @@ assert size > 0, 'The number of selected trigger nodes must be larger than 0!'
 if(args.selection_method == 'none'):
     idx_attach = hs.obtain_attach_nodes(args, labeled_idx, data.y.cpu(), size).to(device)
 elif(args.selection_method == 'sort'):
+    # ENYAN: I add some comments here
     idx_attach = hs.obtain_attach_nodes_sort(args, data, idx_train, idx_val, train_edge_index, device).to(device)
 elif(args.selection_method == 'cluster'):
     idx_attach = hs.cluster_distance_selection(args,data,idx_train,idx_val,idx_clean_test,unlabeled_idx,train_edge_index,size,device)
@@ -223,7 +224,7 @@ for test_model in models:
 
         output = test_model(poison_x,poison_edge_index,poison_edge_weights)
         train_attach_rate = (output.argmax(dim=1)[idx_attach]==args.poison_class).float().mean()
-        #this value should be zero to maximize the relevance between target(the class of attach nodes) and poison(the class we need the attached nodes to be predicted) classes learnt by model
+        #this value should be 1
         print("target class rate on poison samples: {:.4f}".format(train_attach_rate))
         #%%
         final_conv = test_model.final_conv
