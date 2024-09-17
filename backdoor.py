@@ -333,9 +333,10 @@ class Backdoor:
             loss_logic = torch.tensor(0.0, requires_grad=True) 
 
             ## ENYAN: to compute the Gradient value of computation graph attributes X_i fro the classification y_i 
-            ##                                         X_i_grad =  torch.autograd.grad(y_i_score, X_i)
+            ##                                         X_i_grad =  torch.autograd.grad(y_i_score, X_i, create_grah=True)
             ## X_i denote attribute matrix of the nodes in computational graph of node v_i;
             ## y_i_score is the classification score of the predicted class on node v_i, i.e., output[v_i][predicted class of v_i]. 
+            ## create_grah=True, this will ensure the loss based on X_i_grad can backpropagate to the trigger generator.
             ## Then, we can obtain grads of non_trigger nodes and grads of trigger nodes from X_i_grad for the predicted class y_i
             self.final_conv = self.shadow_model.final_conv
             self.final_conv_grads = self.shadow_model.final_conv_grads
