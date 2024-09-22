@@ -34,19 +34,20 @@ parser.add_argument('--model', type=str, default='GCN', help='model',
 parser.add_argument('--dataset', type=str, default='Cora', 
                     help='Dataset',
                     choices=['Cora','Pubmed','Flickr','ogbn-arxiv'])
-parser.add_argument('--train_lr', type=float, default=0.05,
+parser.add_argument('--train_lr', type=float, default=0.01,
                     help='Initial learning rate.')
 parser.add_argument('--weight_decay', type=float, default=5e-4,
                     help='Weight decay (L2 loss on parameters).')
-parser.add_argument('--hidden', type=int, default=128,
+parser.add_argument('--hidden', type=int, default=64,
                     help='Number of hidden units.')
 parser.add_argument('--thrd', type=float, default=0.5)
-parser.add_argument('--target_class', type=int, default=2)
-parser.add_argument('--poison_class', type=int, default=2)
-parser.add_argument('--dropout', type=float, default=0.2,
+parser.add_argument('--target_class', type=int, default=0)
+parser.add_argument('--poison_class', type=int, default=0)
+parser.add_argument('--outter_size', type=int, default=512)
+parser.add_argument('--dropout', type=float, default=0.4,
                     help='Dropout rate (1 - keep probability).')
-parser.add_argument('--epochs', type=int,  default=400, help='Number of epochs to train benign and backdoor model.')
-parser.add_argument('--trojan_epochs', type=int,  default=200, help='Number of epochs to train trigger generator.')
+parser.add_argument('--epochs', type=int,  default=540, help='Number of epochs to train benign and backdoor model.')
+parser.add_argument('--trojan_epochs', type=int,  default=320, help='Number of epochs to train trigger generator.')
 parser.add_argument('--inner', type=int,  default=1, help='Number of inner')
 parser.add_argument('--lambda', type=float, default=0.5, help='the ratio of the two terms of the inner loss')
 # backdoor setting
@@ -58,13 +59,13 @@ parser.add_argument('--use_vs_number', action='store_true', default=True,
                     help="if use detailed number to decide Vs")
 parser.add_argument('--vs_ratio', type=float, default=0,
                     help="ratio of poisoning nodes relative to the full graph")
-parser.add_argument('--vs_number', type=int, default=400,
+parser.add_argument('--vs_number', type=int, default=480,
                     help="number of poisoning nodes relative to the full graph")
 # defense setting
-parser.add_argument('--defense_mode', type=str, default="none",
+parser.add_argument('--defense_mode', type=str, default="prune",
                     choices=['prune', 'isolate', 'none'],
                     help="Mode of defense")
-parser.add_argument('--prune_thr', type=float, default=1.2,
+parser.add_argument('--prune_thr', type=float, default=0.8,
                     help="Threshold of prunning edges")
 parser.add_argument('--target_loss_weight', type=float, default=1,
                     help="Weight of optimize outter trigger generator")
@@ -86,7 +87,7 @@ parser.add_argument('--evaluate_mode', type=str, default='overall',
                     choices=['overall','1by1'],
                     help='Model used to attack')
 # GPU setting
-parser.add_argument('--device_id', type=int, default=3,
+parser.add_argument('--device_id', type=int, default=0,
                     help="Threshold of prunning edges")
 # args = parser.parse_args()
 args = parser.parse_known_args()[0]
@@ -129,6 +130,7 @@ if(args.dataset == 'ogbn-arxiv'):
 #%% 
 from utils import get_split
 data, idx_train, idx_val, idx_clean_test, idx_atk = get_split(args,data,device)
+args.outter_size = int(len(idx_val) * 0.95)
 
 from torch_geometric.utils import to_undirected # type: ignore
 from utils import subgraph
@@ -181,7 +183,7 @@ elif(args.selection_method == 'cluster_degree'):
     idx_attach = torch.LongTensor(idx_attach).to(device)
 #print("idx_attach: {}".format(idx_attach))
 unlabeled_idx = torch.tensor(list(set(unlabeled_idx.cpu().numpy()) - set(idx_attach.cpu().numpy()))).to(device)
-#print(unlabeled_idx)
+# unlabeled_idx = torch.tensor(list(set(unlabeled_idx.cpu().numpy()))).to(device)
 # In[10]:
 # train trigger generator
 model = Backdoor(args,device)
@@ -190,18 +192,20 @@ poison_x, poison_edge_index, poison_edge_weights, poison_labels = model.get_pois
 
 if(args.defense_mode == 'prune'):
     poison_edge_index,poison_edge_weights = prune_unrelated_edge(args,poison_edge_index,poison_edge_weights,poison_x,device,large_graph=False)
-    bkd_tn_nodes = torch.cat([idx_train,idx_attach]).to(device)# is that means backdoor training nodes?
+    # bkd_tn_nodes = torch.cat([idx_train,idx_attach]).to(device)# is that means backdoor training nodes?
+    bkd_tn_nodes = torch.cat([idx_train]).to(device)
 elif(args.defense_mode == 'isolate'):
     poison_edge_index,poison_edge_weights,rel_nodes = prune_unrelated_edge_isolated(args,poison_edge_index,poison_edge_weights,poison_x,device,large_graph=False)
     bkd_tn_nodes = torch.cat([idx_train,idx_attach]).tolist()
     bkd_tn_nodes = torch.LongTensor(list(set(bkd_tn_nodes) - set(rel_nodes))).to(device)
 else:
-    bkd_tn_nodes = torch.cat([idx_train,idx_attach]).to(device)
+    # bkd_tn_nodes = torch.cat([idx_train,idx_attach]).to(device)
+    bkd_tn_nodes = torch.cat([idx_train]).to(device)
 print("precent of left attach nodes: {:.3f}"\
     .format(len(set(bkd_tn_nodes.tolist()) & set(idx_attach.tolist()))/len(idx_attach)))
 
 
-#models = ['GCN','GAT', 'GraphSage']
+# models = ['GCN','GAT', 'GraphSage']
 models = [args.test_model]
 total_overall_asr = 0
 total_overall_ca = 0
@@ -225,16 +229,14 @@ for test_model in models:
         output = test_model(poison_x,poison_edge_index,poison_edge_weights)
         train_attach_rate = (output.argmax(dim=1)[idx_attach]==args.poison_class).float().mean()
         #this value should be 1
+        # in practical, it is not 1 as the model is limited
         print("target class rate on poison samples: {:.4f}".format(train_attach_rate))
         #%%
-        final_conv = test_model.final_conv
-        final_conv_grads = test_model.final_conv_grads
-        final_conv_nonzero = torch.any(final_conv_grads != 0, dim=1).sum().item()
-        grad_cam_weights = grad_cam(final_conv, final_conv_grads)
-        non_zero_grad_cam_weights = [element for element in grad_cam_weights if element != 0]
-        #print('the nonzero row number is ', final_conv_nonzero)
-        #print('the final conv grads is:', final_conv_grads)
-        #print('the non-zero grad cam weights is:', len(non_zero_grad_cam_weights))
+        # final_conv = test_model.final_conv
+        # final_conv_grads = test_model.final_conv_grads
+        # final_conv_nonzero = torch.any(final_conv_grads != 0, dim=1).sum().item()
+        # grad_cam_weights = grad_cam(final_conv, final_conv_grads)
+        # non_zero_grad_cam_weights = [element for element in grad_cam_weights if element != 0]
         #%%
         test_model.load_state_dict(model.poisoned_paras)
         induct_edge_index = torch.cat([poison_edge_index,mask_edge_index],dim=1)
@@ -315,7 +317,6 @@ total_overall_asr = total_overall_asr/len(models)
 total_overall_ca = total_overall_ca/len(models)
 print("Total Overall ASR: {:.4f} ".format(total_overall_asr))
 print("Total Clean Accuracy: {:.4f}".format(total_overall_ca))
-torch.cuda.empty_cache()
 torch.cuda.empty_cache()
 torch.cuda.empty_cache()
 #%%
