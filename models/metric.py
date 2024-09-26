@@ -5,18 +5,18 @@ import torch.nn.functional as F
 import torch.optim as optim
 import utils
 from copy import deepcopy
-from torch_geometric.nn import GCNConv, GATConv
+from torch_geometric.nn import GCNConv
 import numpy as np
 import scipy.sparse as sp
 from torch_geometric.utils import from_scipy_sparse_matrix
 
 
 
-class GCN(nn.Module):
+class metric(nn.Module):
 
     def __init__(self, nfeat, nhid, nclass, dropout=0.5, lr=0.01, weight_decay=5e-4, layer=2,device=None,layer_norm_first=False,use_ln=False):
 
-        super(GCN, self).__init__()
+        super(metric, self).__init__()
 
         assert device is not None, "Please specify 'device'!"
         self.device = device
@@ -36,7 +36,6 @@ class GCN(nn.Module):
         self.lr = lr
         self.output = None
         self.edge_index = None
-        self.edge_weight = None
         self.features = None 
         self.weight_decay = weight_decay
 
@@ -48,19 +47,18 @@ class GCN(nn.Module):
     def activations_hook(self, grad):
         self.final_conv_grads = grad
 
-    def forward(self, x, edge_index, edge_weight=None):
+    def forward(self, x, edge_index):
         if(self.layer_norm_first):
             x = self.lns[0](x)
         i = 0
         for conv in self.convs:
-            x = F.relu(conv(x, edge_index, edge_weight))
+            x = F.relu(conv(x, edge_index))
             if self.use_ln:
                 x = self.lns[i+1](x)
             i += 1
             x = F.dropout(x, self.dropout, training=self.training)
         with torch.enable_grad():
-            #x = self.gc2(x, edge_index, edge_weight)
-            self.final_conv = self.gc2(x, edge_index, edge_weight)
+            self.final_conv = self.gc2(x, edge_index)
         self.final_conv.register_hook(self.activations_hook)
         h = self.final_conv
         return F.log_softmax(h,dim=1)
@@ -71,7 +69,7 @@ class GCN(nn.Module):
         
         return x
 
-    def fit(self, features, edge_index, edge_weight, labels, idx_train, idx_val=None, train_iters=200, verbose=False):
+    def fit(self, features, edge_index, labels, idx_train, idx_val=None, train_iters=200, verbose=False):
         """Train the gcn model, when idx_val is not None, pick the best model according to the validation loss.
         Parameters
         ----------
@@ -93,7 +91,7 @@ class GCN(nn.Module):
             whether to show verbose logs
         """
 
-        self.edge_index, self.edge_weight = edge_index, edge_weight
+        self.edge_index = edge_index
         self.features = features.to(self.device)
         self.labels = labels.to(self.device)
 
@@ -109,7 +107,7 @@ class GCN(nn.Module):
         for i in range(train_iters):
             self.train()
             optimizer.zero_grad()
-            output = self.forward(self.features, self.edge_index, self.edge_weight)
+            output = self.forward(self.features, self.edge_index)
             loss_train = F.nll_loss(output[idx_train], labels[idx_train])
             loss_train.backward()
             optimizer.step()
@@ -118,7 +116,7 @@ class GCN(nn.Module):
                 pass
 
         self.eval()
-        output = self.forward(self.features, self.edge_index, self.edge_weight)
+        output = self.forward(self.features, self.edge_index)
         self.output = output
         # torch.cuda.empty_cache()
 
@@ -133,7 +131,7 @@ class GCN(nn.Module):
         for i in range(train_iters):
             #self.train()
             optimizer.zero_grad()
-            output = self.forward(self.features, self.edge_index, self.edge_weight)
+            output = self.forward(self.features, self.edge_index)
             loss_train = F.nll_loss(output[idx_train], labels[idx_train])
             loss_train.backward()
             optimizer.step()
@@ -141,13 +139,14 @@ class GCN(nn.Module):
 
 
             self.eval()
-            output = self.forward(self.features, self.edge_index, self.edge_weight)
+            output = self.forward(self.features, self.edge_index)
             loss_val = F.nll_loss(output[idx_val], labels[idx_val])
             acc_val = utils.accuracy(output[idx_val], labels[idx_val])
             
             if verbose and i % 10 == 0:
                 # print('Epoch {}, training loss: {}'.format(i, loss_train.item()))
-                print("acc_val: {:.4f}".format(acc_val))
+                # print("acc_val: {:.4f}".format(acc_val))
+                pass
             if acc_val > best_acc_val:
                 best_acc_val = acc_val
                 self.output = output
@@ -159,7 +158,7 @@ class GCN(nn.Module):
         # torch.cuda.empty_cache()
 
 
-    def test(self, features, edge_index, edge_weight, labels,idx_test):
+    def test(self, features, edge_index, labels,idx_test):
         """Evaluate GCN performance on test set.
         Parameters
         ----------
@@ -168,7 +167,7 @@ class GCN(nn.Module):
         """
         self.eval()
         with torch.no_grad():
-            output = self.forward(features, edge_index, edge_weight)
+            output = self.forward(features, edge_index)
             acc_test = utils.accuracy(output[idx_test], labels[idx_test])
         # torch.cuda.empty_cache()
         # print("Test set results:",
@@ -176,9 +175,9 @@ class GCN(nn.Module):
         #       "accuracy= {:.4f}".format(acc_test.item()))
         return float(acc_test)
     
-    def test_with_correct_nodes(self, features, edge_index, edge_weight, labels,idx_test):
+    def test_with_correct_nodes(self, features, edge_index, labels,idx_test):
         self.eval()
-        output = self.forward(features, edge_index, edge_weight)
+        output = self.forward(features, edge_index)
         correct_nids = (output.argmax(dim=1)[idx_test]==labels[idx_test]).nonzero().flatten()   # return a tensor
         acc_test = utils.accuracy(output[idx_test], labels[idx_test])
         # torch.cuda.empty_cache()

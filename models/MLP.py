@@ -3,13 +3,33 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from deeprobust.graph import utils
 from copy import deepcopy
 from torch_geometric.nn import GCNConv
 import numpy as np
 import scipy.sparse as sp
 from torch_geometric.utils import from_scipy_sparse_matrix
 
+def accuracy(output, labels):
+    """Return accuracy of output compared to labels.
+    Parameters
+    ----------
+    output : torch.Tensor
+        output from model
+    labels : torch.Tensor or numpy.array
+        node labels
+    Returns
+    -------
+    float
+        accuracy
+    """
+    if not hasattr(labels, '__len__'):
+        labels = [labels]
+    if type(labels) is not torch.Tensor:
+        labels = torch.LongTensor(labels)
+    preds = output.max(1)[1].type_as(labels)
+    correct = preds.eq(labels).double()
+    correct = correct.sum()
+    return correct / len(labels)
 
 class MLP(nn.Module):
 
@@ -108,7 +128,7 @@ class MLP(nn.Module):
             self.eval()
             output = self.forward(self.features)
             loss_val = F.cross_entropy(output[idx_val], labels[idx_val])
-            acc_val = utils.accuracy(output[idx_val], labels[idx_val])
+            acc_val = accuracy(output[idx_val], labels[idx_val])
 
             if acc_val > best_acc_val:
                 best_acc_val = acc_val
@@ -132,7 +152,7 @@ class MLP(nn.Module):
         output = self.forward(self.features)
         # output = self.output
         loss_test = F.cross_entropy(output[idx_test], self.labels[idx_test])
-        acc_test = utils.accuracy(output[idx_test], self.labels[idx_test])
+        acc_test = accuracy(output[idx_test], self.labels[idx_test])
         # print("Test set results:",
         #       "loss= {:.4f}".format(loss_test.item()),
         #       "accuracy= {:.4f}".format(acc_test.item()))

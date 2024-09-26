@@ -187,7 +187,7 @@ class Backdoor:
     
         # change the labels of the poisoned node to the target class
         self.labels = labels.clone()
-        self.labels[idx_attach] = args.target_class
+        #self.labels[idx_attach] = args.target_class
 
         # get the trojan edges, which include the target-trigger edge and the edges among trigger
         trojan_edge = self.get_trojan_edge(len(features),idx_attach,args.trigger_size).to(self.device)

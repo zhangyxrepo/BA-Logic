@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from deeprobust.graph import utils
 from copy import deepcopy
 from torch_geometric.nn import GINConv,GCNConv
 import numpy as np
@@ -26,15 +25,20 @@ class GIN(GCN,nn.Module):
         self.lr = lr
         self.weight_decay = weight_decay
 
-        self.gc1 = GCNConv(nfeat, nhid, bias=True,add_self_loops=True,normalize=False)
+        self.gc1 = GCNConv(nfeat, nhid, bias=True,add_self_loops=True,normalize=True)
         self.h1 = Linear(nhid,nhid)
-        self.gc2 = GCNConv(nhid, nhid, bias=True,add_self_loops=True,normalize=False)
+        self.gc2 = GCNConv(nhid, nhid, bias=True,add_self_loops=True,normalize=True)
         self.h2 = Linear(nhid,nclass)
 
         self.output = None
         self.edge_index = None
         self.edge_weight = None
         self.features = None
+        self.final_conv = None
+        self.final_conv_grads = None
+        
+    def activations_hook(self, grad):
+        self.final_conv_grads = grad
 
     def forward(self, x, edge_index, edge_weight):
         x = F.relu(self.gc1(x, edge_index))
@@ -42,6 +46,9 @@ class GIN(GCN,nn.Module):
         x = F.dropout(x, self.dropout, training=self.training)
         # x = self.bn1(x)
         x = self.gc2(x, edge_index)
-        x = self.h2(x)
-        return F.log_softmax(x,dim=1)
+        with torch.enable_grad():
+            self.final_conv = self.h2(x)
+        self.final_conv.register_hook(self.activations_hook)
+        h = self.final_conv
+        return F.log_softmax(h,dim=1)
 # %%

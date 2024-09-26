@@ -33,13 +33,24 @@ class GraphSage(nn.Module):
         self.edge_weight = None
         self.features = None 
         self.weight_decay = weight_decay
+        self.final_conv = None
+        self.final_conv_grads = None
+        
+    def activations_hook(self, grad):
+        self.final_conv_grads = grad
 
     def forward(self, x, edge_index, edge_weight=None):
         for conv in self.convs:
             x = F.relu(conv(x, edge_index))
             x = F.dropout(x, self.dropout, training=self.training)
-        x = self.gc2(x, edge_index)
-        return F.log_softmax(x,dim=1)
+        #x = self.gc2(x, edge_index)
+        with torch.enable_grad():
+            #x = self.gc2(x, edge_index)
+            self.final_conv = self.gc2(x, edge_index)
+        self.final_conv.register_hook(self.activations_hook)
+        h = self.final_conv
+        return F.log_softmax(h,dim=1)
+    
     def get_h(self, x, edge_index):
 
         for conv in self.convs:

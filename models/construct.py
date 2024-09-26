@@ -1,6 +1,8 @@
 # %%
 from models.GCN import GCN
 from models.GAT import GAT
+from models.GIN import GIN
+from models.metric import metric
 from models.SAGE import GraphSage
 from models.GCN_Encoder import GCN_Encoder
 from models.GNNGuard import GNNGuard
@@ -26,14 +28,30 @@ def model_construct(args,model_name,data,device):
                     layer_norm_first=layer_norm_first)
         
     elif(model_name == 'GAT'):
-        model = GAT(nfeat=data.x.shape[1], 
-                    nhid=args.hidden, 
-                    nclass=int(data.y.max()+1), 
-                    heads=8,
-                    dropout=args.dropout, 
-                    lr=args.train_lr, 
-                    weight_decay=args.weight_decay, 
+        model = GAT(nfeat=data.x.shape[1], \
+                    nhid=args.hidden, \
+                    nclass=int(data.y.max()+1), \
+                    heads=8, \
+                    dropout=args.dropout, \
+                    lr=args.train_lr, \
+                    weight_decay=args.weight_decay, \
                     device=device)
+    elif(model_name == 'GIN'):
+        model = GIN(nfeat=data.x.shape[1],\
+                nhid=args.hidden,\
+                nclass= int(data.y.max()+1),\
+                dropout=args.dropout,\
+                lr=args.train_lr,\
+                weight_decay=args.weight_decay,\
+                device=device)
+    elif(model_name == 'GCN_metric'):
+        model = metric(nfeat=data.x.shape[1],\
+                nhid=args.hidden,\
+                nclass= int(data.y.max()+1),\
+                dropout=args.dropout,\
+                lr=args.train_lr,\
+                weight_decay=args.weight_decay,\
+                device=device)
     elif(model_name == 'GraphSage'):
         model = GraphSage(nfeat=data.x.shape[1],\
                 nhid=args.hidden,\

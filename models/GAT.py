@@ -5,10 +5,11 @@ import torch.nn.functional as F
 import torch.optim as optim
 import utils
 from copy import deepcopy
-from torch_geometric.nn import GCNConv,GATConv
+from torch_geometric.nn import GATConv
 import numpy as np
 import scipy.sparse as sp
 from torch_geometric.utils import from_scipy_sparse_matrix
+from torch.cuda.amp import autocast, GradScaler
 
 class GAT(nn.Module):
 
@@ -37,6 +38,11 @@ class GAT(nn.Module):
         self.edge_index = None
         self.edge_weight = None
         self.features = None
+        self.final_conv = None
+        self.final_conv_grads = None
+        
+    def activations_hook(self, grad):
+        self.final_conv_grads = grad
 
     def forward(self, x, edge_index, edge_weight=None): 
         x = F.dropout(x, p=self.dropout, training=self.training)    # optional
@@ -44,8 +50,11 @@ class GAT(nn.Module):
         x = F.elu(self.gc1(x, edge_index))
         x = F.dropout(x, self.dropout, training=self.training)
         # x = self.gc2(x, edge_index, edge_weight)
-        x = self.gc2(x, edge_index)
-        return F.log_softmax(x,dim=1)
+        with torch.enable_grad():
+            self.final_conv = self.gc2(x, edge_index, edge_weight)
+        # self.final_conv.register_hook(self.activations_hook)
+        h = self.final_conv
+        return F.log_softmax(h,dim=1)
 
     def initialize(self):
         """Initialize parameters of GCN.
@@ -59,7 +68,7 @@ class GAT(nn.Module):
         self.edge_index, self.edge_weight = edge_index, edge_weight
         self.features = features
         self.labels = torch.tensor(labels, dtype=torch.long)
-
+        # self.labels = labels.clone().detach().long()
 
         if idx_val is None:
             self._train_without_val(self.labels, idx_train, train_iters, verbose)
@@ -68,6 +77,7 @@ class GAT(nn.Module):
 
     def _train_without_val(self, labels, idx_train, train_iters, verbose):
         self.train()
+        print('Now training without validation!!!')
         optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         for i in range(train_iters):
             optimizer.zero_grad()
@@ -82,28 +92,66 @@ class GAT(nn.Module):
         output = self.forward(self.features, self.edge_index, self.edge_weight)
         self.output = output
 
+    # def _train_with_val(self, labels, idx_train, idx_val, train_iters, verbose):
+    #     if verbose:
+    #         print('=== training gcn model ===')
+    #     optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+
+    #     best_loss_val = 100
+    #     best_acc_val = 0
+
+    #     for i in range(train_iters):
+    #         self.train()
+    #         optimizer.zero_grad()
+    #         output = self.forward(self.features, self.edge_index, self.edge_weight)
+    #         loss_train = F.nll_loss(output[idx_train], labels[idx_train])
+    #         loss_train.backward()
+    #         optimizer.step()
+
+
+
+    #         self.eval()
+    #         output = self.forward(self.features, self.edge_index,self.edge_weight)
+    #         loss_val = F.nll_loss(output[idx_val], labels[idx_val])
+    #         acc_val = utils.accuracy(output[idx_val], labels[idx_val])
+            
+    #         if verbose and i % 10 == 0:
+    #             print('Epoch {}, training loss: {}'.format(i, loss_train.item()))
+    #             print("acc_val: {:.4f}".format(acc_val))
+    #         if acc_val > best_acc_val:
+    #             best_acc_val = acc_val
+    #             self.output = output
+    #             weights = deepcopy(self.state_dict())
+
+    #     if verbose:
+    #         print('=== picking the best model according to the performance on validation ===')
+    #     self.load_state_dict(weights)
     def _train_with_val(self, labels, idx_train, idx_val, train_iters, verbose):
         if verbose:
             print('=== training gcn model ===')
         optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-
+        scaler = GradScaler()
+        print('Now training with validation!!!')
         best_loss_val = 100
         best_acc_val = 0
 
         for i in range(train_iters):
             self.train()
             optimizer.zero_grad()
-            output = self.forward(self.features, self.edge_index, self.edge_weight)
-            loss_train = F.nll_loss(output[idx_train], labels[idx_train])
-            loss_train.backward()
-            optimizer.step()
-
+            with autocast():
+                output = self.forward(self.features, self.edge_index, self.edge_weight)
+                loss_train = F.nll_loss(output[idx_train], labels[idx_train])
+            scaler.scale(loss_train).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
 
             self.eval()
-            output = self.forward(self.features, self.edge_index,self.edge_weight)
-            loss_val = F.nll_loss(output[idx_val], labels[idx_val])
-            acc_val = utils.accuracy(output[idx_val], labels[idx_val])
+            with torch.no_grad():
+                with autocast():
+                    output = self.forward(self.features, self.edge_index,self.edge_weight)
+                    loss_val = F.nll_loss(output[idx_val], labels[idx_val])
+                    acc_val = utils.accuracy(output[idx_val], labels[idx_val])
             
             if verbose and i % 10 == 0:
                 print('Epoch {}, training loss: {}'.format(i, loss_train.item()))
@@ -116,6 +164,9 @@ class GAT(nn.Module):
         if verbose:
             print('=== picking the best model according to the performance on validation ===')
         self.load_state_dict(weights)
+        torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
+        torch.cuda.empty_cache()    
 
 
     def test(self, features, edge_index, edge_weight, labels,idx_test):
@@ -126,8 +177,10 @@ class GAT(nn.Module):
             node testing indices
         """
         self.eval()
-        output = self.forward(features, edge_index, edge_weight)
-        acc_test = utils.accuracy(output[idx_test], labels[idx_test])
+        with torch.no_grad():
+            with autocast():
+                output = self.forward(features, edge_index, edge_weight)
+            acc_test = utils.accuracy(output[idx_test], labels[idx_test])
         # print("Test set results:",
         #       "loss= {:.4f}".format(loss_test.item()),
         #       "accuracy= {:.4f}".format(acc_test.item()))
