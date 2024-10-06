@@ -236,7 +236,7 @@ class Backdoor:
             self.shadow_model = surrogate_GAT(nfeat=features.shape[1],
                                                  nhid=self.args.hidden,
                                                  nclass=labels.max().item() + 1,
-                                                 dropout=0.5, device=self.device).to(self.device)
+                                                 dropout=0.4, device=self.device).to(self.device)
         elif args.test_model == 'GIN':
             self.shadow_model = surrogate_GIN(nfeat=features.shape[1],
                                                  nhid=self.args.hidden,
@@ -263,15 +263,10 @@ class Backdoor:
 
         # update the poisoned graph's edge index
         poison_edge_index = torch.cat([edge_index,trojan_edge],dim=1)
-        poison_labels_inner = torch.full_like(idx_attach, fill_value=args.poison_class, device=self.device)
+        poison_labels = torch.full_like(idx_attach, fill_value=args.poison_class, device=self.device)
+
         
         loss_best = 1e8
-        rs = np.random.RandomState(self.args.seed)
-        idx_outter = torch.cat([idx_attach,idx_unlabeled[rs.choice(len(idx_unlabeled),size=args.outter_size,replace=False)]])
-        idx_uni = torch.tensor(list(set(idx_train.tolist()) - set(idx_attach.tolist())),device=self.device)
-        trojan_labels = torch.full(size=(len(idx_outter)*args.trigger_size,), fill_value=args.poison_class,dtype=self.labels.dtype, device=self.device)
-        poison_labels_outter = torch.full(size=(len(idx_outter),), fill_value=args.poison_class,dtype=self.labels.dtype, device=self.device)
-   
         for i in range(args.trojan_epochs):
             self.trojan.train()
             for j in range(self.args.inner):
@@ -285,9 +280,8 @@ class Backdoor:
 
                 output = self.shadow_model(poison_x, poison_edge_index, poison_edge_weights)
 
-                # idx_uni = torch.tensor(list(set(idx_train.tolist()) - set(idx_attach.tolist())),device=self.device)     
-                # loss_inner =  F.nll_loss(output[idx_uni], labels[idx_uni]) + F.nll_loss(output[idx_attach], poison_labels_inner)
-                loss_inner = F.nll_loss(output[idx_uni], labels[idx_uni])
+                idx_uni = torch.tensor(list(set(idx_train.tolist()) - set(idx_attach.tolist())),device=self.device)     
+                loss_inner =  F.nll_loss(output[idx_uni], labels[idx_uni]) + F.nll_loss(output[idx_attach], poison_labels)
                 # this is loss $L_s$ in the paper, we modify it here to make the shadow model learn the backdoor pattern
 
                 loss_inner.backward()
@@ -296,13 +290,14 @@ class Backdoor:
             loss_inner.detach()
             acc_train_clean = utils.accuracy(output[idx_uni], self.labels[idx_uni])
             # acc_train_attach = utils.accuracy(output[idx_attach], self.labels[idx_attach])
-            acc_train_attach = utils.accuracy(output[idx_attach], poison_labels_inner)
+            acc_train_attach = utils.accuracy(output[idx_attach], poison_labels)
             
             # involve unlabeled nodes in outter optimization
             #self.trojan.eval()
             optimizer_trigger.zero_grad()
 
-            # idx_outter = torch.cat([idx_attach,idx_unlabeled[rs.choice(len(idx_unlabeled),size=args.outter_size,replace=False)]])
+            rs = np.random.RandomState(self.args.seed)
+            idx_outter = torch.cat([idx_attach,idx_unlabeled[rs.choice(len(idx_unlabeled),size=args.outter_size,replace=False)]])
             
             trojan_feat, trojan_weights = self.trojan(features[idx_outter],self.args.thrd) # may revise the process of generate
             trojan_feat.requires_grad_(True)
@@ -316,7 +311,8 @@ class Backdoor:
             update_edge_weights = torch.cat([edge_weight,trojan_weights,trojan_weights])
             update_feat = torch.cat([features,trojan_feat])
             update_edge_index = torch.cat([edge_index,trojan_edge],dim=1)
-            # trojan_labels = torch.full(size=(len(idx_outter)*args.trigger_size,), fill_value=args.poison_class,dtype=self.labels.dtype, device=self.device)
+            label_value = args.poison_class 
+            trojan_labels = torch.full(size=(len(idx_outter)*args.trigger_size,), fill_value=label_value,dtype=self.labels.dtype, device=self.device)
 
             update_label = torch.cat([self.labels, trojan_labels])
 
@@ -325,7 +321,6 @@ class Backdoor:
             trigger_nodes = torch.cat([filtered_edges[0], filtered_edges[1]])
             trigger_nodes = trigger_nodes[~torch.isin(trigger_nodes, idx_outter)]
             trigger_nodes = torch.unique(trigger_nodes).to(self.device)
-            initial_trigger_nodes = trigger_nodes.clone()
 #%%
 
             #optimizer_surrogate.zero_grad()
@@ -337,12 +332,7 @@ class Backdoor:
             
 #%%         
             # clone lables before you modify them
-            # loss_inner = F.nll_loss(output[idx_uni], labels[idx_uni])
-            #  + F.nll_loss(output[idx_attach], poison_labels)
-            # idx_outter is the newer version of idx_attach, and the newer versio of idx_uni is the idx_
-            # poison_labels_outter = torch.full(size=(len(idx_outter),), fill_value=args.poison_class,dtype=self.labels.dtype, device=self.device)
-            loss_target = self.args.target_loss_weight * F.nll_loss(output[torch.cat([idx_target,idx_outter])], update_label[torch.cat([idx_target,idx_outter])])
-            loss_target = self.args.target_loss_weight * (F.nll_loss(output[idx_train], update_label[idx_train]) + F.nll_loss(output[trigger_nodes], update_label[trigger_nodes]) + F.nll_loss(output[idx_outter], poison_labels_outter))
+            loss_target = self.args.target_loss_weight *F.nll_loss(output[torch.cat([idx_target,idx_outter])], update_label[torch.cat([idx_target,idx_outter])])
             loss_target.backward(retain_graph=True)
             optimizer_shadow.step()
             loss_homo = 0.0
@@ -363,50 +353,55 @@ class Backdoor:
             # self.final_conv_grads = self.shadow_model.final_conv_grads
             target_class = args.target_class
             #self.final_conv_grads = torch.autograd.grad(output, update_feat, create_graph=True, retain_graph=True)
-            T = torch.tensor(0.0)
-            T.fill_(args.T)
+            clip_grad_norm_(self.shadow_model.parameters(), max_norm=5e-5)
+            scaler = GradScaler()
+            T = torch.tensor(4.2, requires_grad=True)
             loss_logic = torch.tensor(0.0, requires_grad=True)
             non_trigger_grads = 0
             trigger_grads = 0
             sum_non_trigger_grads = 0
             sum_trigger_grads = 0
-            zero = torch.tensor(0.0, requires_grad=True)
             for v in idx_outter:
                 v = v.unsqueeze(0)
                 sub_nodes, *_ = k_hop_subgraph(v, num_hops=1, edge_index=update_edge_index)
-                t_mask = ~torch.isin(sub_nodes, initial_trigger_nodes)
-                non_trigger_nodes = sub_nodes[t_mask]
-                n_mask = torch.isin(sub_nodes, initial_trigger_nodes)
-                trigger_nodes = sub_nodes[n_mask]
+                mask = ~torch.isin(sub_nodes, trigger_nodes)
+                non_trigger_nodes = sub_nodes[mask]
+                mask = torch.isin(sub_nodes, trigger_nodes)
+                trigger_nodes = sub_nodes[mask]
                 non_trigger_grads = torch.tensor(0.0, requires_grad=True)
                 trigger_grads = torch.tensor(0.0, requires_grad=True)
                 # print("this is the trigger_nodes {} of node {}".format(trigger_nodes, v))
                 # It is still problem here, the trigger_nodes is not correct as it is a tensor contain all the nodes in the triggers
                 trigger_output = output[trigger_nodes, target_class].sum()
-                trigger_grads = torch.autograd.grad(trigger_output, update_feat, retain_graph=True)[0]#4754, 1433
-                # trigger_grads.requires_grad_(True)
+                trigger_grads = torch.autograd.grad(trigger_output, update_feat, retain_graph=True)#4754, 1433
                 non_trigger_output = output[non_trigger_nodes, target_class].sum()
-                non_trigger_grads = torch.autograd.grad(non_trigger_output, update_feat, retain_graph=True)[0]
-                # non_trigger_grads.requires_grad_(True)
+                non_trigger_grads = torch.autograd.grad(non_trigger_output, update_feat, retain_graph=True)
                 # for l in non_trigger_nodes:
                 #     non_trigger_grads = torch.autograd.grad(output[l, target_class], update_feat, retain_graph=True)
                 
-                sum_non_trigger_grads = non_trigger_grads[non_trigger_nodes].sum(dim=1).sum()
-                sum_trigger_grads = trigger_grads[trigger_nodes].sum(dim=1).sum()
+                sum_non_trigger_grads = non_trigger_grads[0][non_trigger_nodes].sum(dim=1).sum()
+                sum_trigger_grads = trigger_grads[0][trigger_nodes].sum(dim=1).sum()
+
                 # print(f"trigger_grads[0].sum(): {trigger_grads[0].sum()}, shape: {trigger_grads[0].shape}")
                 # print(f"non_trigger_grads[0].sum(): {non_trigger_grads[0].sum()}, shape: {non_trigger_grads[0].shape}")
                 # print(f"non_trigger_grads[0].sum().max(): {non_trigger_grads[0].sum().max()}")
-                # T = (trigger_grads[trigger_nodes].sum(dim=1).max())
-
-                # T = torch.norm(T, p=1) # note that there are negative values in T, so I add l-1 norm here
-                T = torch.abs(T)
+                T = (non_trigger_grads[0][non_trigger_nodes].sum(dim=1).max())
+                # print("T of this idx_outter is: {:.5f}".format(T))
+                # note that there are negative values in T, so I add l-1 norm here
+                # T = torch.norm(T, p=1)
+                zero = torch.tensor(0.0, requires_grad=True)
                 loss_contribution = torch.max(zero, T + torch.relu(torch.norm(sum_non_trigger_grads, p=2)) - torch.norm(sum_trigger_grads, p=2))
-                # loss_contribution = F.mse_loss(sum_trigger_grads, sum_non_trigger_grads + T)
+                # print(f"T: {T}, loss_contribution: {loss_contribution}")
+                # loss_contribution = utils.softplus(T + utils.softplus(sum_non_trigger_grads) - sum_trigger_grads)
+                # loss_contribution = F.mse_loss(sum_trigger_grads, sum_non_trigger_grads)
+                # LeakyReLU = nn.LeakyReLU(negative_slope=5e-3)
+                # loss_contribution = LeakyReLU(sum_trigger_grads - sum_non_trigger_grads)
+                # loss_contribution = utils.softplus(T + utils.softplus(sum_non_trigger_grads) - sum_trigger_grads)
+                
                 # ENYAN: THE LOSS ON THE LOGIC PART IS ALSO REQUIRED TO BE REVISED.
                 loss_logic = loss_contribution
                 # loss_logic = loss_logic + loss_contribution
-            # loss_outter = loss_target.detach() + loss_logic
-            loss_outter = loss_target + args.logic_loss_weight * loss_logic + loss_homo
+            loss_outter = loss_target.detach() + loss_logic
             loss_outter.backward()
             optimizer_trigger.step()
             acc_train_outter =(output[idx_outter].argmax(dim=1)==args.poison_class).float().mean()
@@ -418,8 +413,8 @@ class Backdoor:
                 loss_best = float(loss_outter.item())
 
             if args.debug and i % 10 == 0:
-                print('Epoch {}, loss_inner: {:.5f}, loss_target: {:.5f}, loss_logic:{:.5f}, Pure contribution of this ten epochs is {:.5f} '\
-                        .format(i, loss_inner, loss_target, loss_logic, (loss_logic- T)))
+                print('Epoch {}, loss_inner: {:.5f}, loss_target: {:.5f}, homo loss: {:.5f}, loss_logic:{:.5f}, T of this ten epochs is {:.5f} '\
+                        .format(i, loss_inner, loss_target, loss_homo, loss_logic, T))
                 print("Acc_train_clean: {:.4f}, ASR_train_attach: {:.4f}, ASR_train_outter: {:.4f}"\
                         .format(acc_train_clean,acc_train_attach,acc_train_outter))
         
@@ -427,7 +422,4 @@ class Backdoor:
             print("load best weight based on the loss outter")
         self.trojan.load_state_dict(self.weights)
         self.trojan.eval()
-        torch.cuda.empty_cache()
-        torch.cuda.empty_cache()
-        torch.cuda.empty_cache()
 # %%        
