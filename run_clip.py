@@ -28,12 +28,28 @@ parser.add_argument('--debug', action='store_true',
         default=True, help='debug mode')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='Disables CUDA training.')
-parser.add_argument('--seed', type=int, default=42, help='Random seed.')
-parser.add_argument('--model', type=str, default='GCN', help='model',
-                    choices=['GCN','GAT','GraphSage','GIN'])
-parser.add_argument('--dataset', type=str, default='Cora', 
+parser.add_argument('--seed', type=int, default=835, help='Random seed.')
+parser.add_argument('--test_model', type=str, default='GCN', help='model',
+                    choices=['GCN','GAT','GraphSage','GIN', 'RGCN', 'PGCN'])
+parser.add_argument('--dataset', type=str, default='Pubmed', 
                     help='Dataset',
                     choices=['Cora','Pubmed','Flickr','ogbn-arxiv'])
+parser.add_argument('--epochs', type=int,  default=200, help='Number of epochs to train benign and backdoor model.')
+parser.add_argument('--trojan_epochs', type=int,  default=200, help='Number of epochs to train trigger generator.')
+parser.add_argument('--vs_number', type=int, default=200,
+                    help="number of poisoning nodes relative to the full graph")
+parser.add_argument('--outter_size', type=int, default=200)
+parser.add_argument('--device_id', type=int, default=3,
+                    help="Threshold of prunning edges")
+parser.add_argument('--defense_mode', type=str, default="none",
+                    choices=['prune', 'isolate', 'none'],
+                    help="Mode of defense")
+parser.add_argument('--logic_loss_weight', type=float, default=1,
+                    help="Weight of optimize similarity loss")
+parser.add_argument('--target_loss_weight', type=float, default=10,
+                    help="Weight of optimize outter trigger generator")
+parser.add_argument('--T', type=float, default=50.0,
+                    help="Value of T")
 parser.add_argument('--train_lr', type=float, default=0.01,
                     help='Initial learning rate.')
 parser.add_argument('--weight_decay', type=float, default=5e-4,
@@ -43,13 +59,9 @@ parser.add_argument('--hidden', type=int, default=64,
 parser.add_argument('--thrd', type=float, default=0.5)
 parser.add_argument('--target_class', type=int, default=0)
 parser.add_argument('--poison_class', type=int, default=0)
-parser.add_argument('--outter_size', type=int, default=512)
-parser.add_argument('--dropout', type=float, default=0.4,
+parser.add_argument('--dropout', type=float, default=0.5,
                     help='Dropout rate (1 - keep probability).')
-parser.add_argument('--epochs', type=int,  default=540, help='Number of epochs to train benign and backdoor model.')
-parser.add_argument('--trojan_epochs', type=int,  default=320, help='Number of epochs to train trigger generator.')
 parser.add_argument('--inner', type=int,  default=1, help='Number of inner')
-parser.add_argument('--lambda', type=float, default=0.5, help='the ratio of the two terms of the inner loss')
 # backdoor setting
 parser.add_argument('--lr', type=float, default=0.01,
                     help='Initial learning rate.')
@@ -59,17 +71,12 @@ parser.add_argument('--use_vs_number', action='store_true', default=True,
                     help="if use detailed number to decide Vs")
 parser.add_argument('--vs_ratio', type=float, default=0,
                     help="ratio of poisoning nodes relative to the full graph")
-parser.add_argument('--vs_number', type=int, default=480,
-                    help="number of poisoning nodes relative to the full graph")
 # defense setting
-parser.add_argument('--defense_mode', type=str, default="prune",
-                    choices=['prune', 'isolate', 'none'],
-                    help="Mode of defense")
-parser.add_argument('--prune_thr', type=float, default=0.8,
+# parser.add_argument('--defense_mode', type=str, default="prune",
+#                     choices=['prune', 'isolate', 'none'],
+#                     help="Mode of defense")
+parser.add_argument('--prune_thr', type=float, default=0.5,
                     help="Threshold of prunning edges")
-parser.add_argument('--target_loss_weight', type=float, default=1,
-                    help="Weight of optimize outter trigger generator")
-
 parser.add_argument('--homo_loss_weight', type=float, default=0.1,
                     help="Weight of optimize similarity loss")
 parser.add_argument('--homo_boost_thrd', type=float, default=0.8,
@@ -80,15 +87,9 @@ parser.add_argument('--dis_weight', type=float, default=1,
 parser.add_argument('--selection_method', type=str, default='sort',
                     choices=['conf','cluster','none','cluster_degree', 'sort'],
                     help='Method to select idx_attach for training trojan model (none means randomly select)')
-parser.add_argument('--test_model', type=str, default='GCN',
-                    choices=['GCN','GAT','GraphSage','GIN'],
-                    help='Model used to attack')
 parser.add_argument('--evaluate_mode', type=str, default='overall',
                     choices=['overall','1by1'],
                     help='Model used to attack')
-# GPU setting
-parser.add_argument('--device_id', type=int, default=0,
-                    help="Threshold of prunning edges")
 # args = parser.parse_args()
 args = parser.parse_known_args()[0]
 args.cuda =  not args.no_cuda and torch.cuda.is_available()
@@ -97,7 +98,7 @@ device = torch.device(('cuda:{}' if torch.cuda.is_available() else 'cpu').format
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 torch.cuda.manual_seed(args.seed)
-#print(args)
+st = time.time()
 
 # In[2]:
 from torch_geometric.utils import to_undirected
@@ -130,8 +131,8 @@ if(args.dataset == 'ogbn-arxiv'):
 #%% 
 from utils import get_split
 data, idx_train, idx_val, idx_clean_test, idx_atk = get_split(args,data,device)
-args.outter_size = int(len(idx_val) * 0.95)
-
+# args.outter_size = int(len(idx_val) * 0.95)
+# args.outter_size = 40
 from torch_geometric.utils import to_undirected # type: ignore
 from utils import subgraph
 data.edge_index = to_undirected(data.edge_index)
@@ -172,6 +173,12 @@ if(args.selection_method == 'none'):
 elif(args.selection_method == 'sort'):
     # ENYAN: I add some comments here
     idx_attach = hs.obtain_attach_nodes_sort(args, data, idx_train, idx_val, train_edge_index, device).to(device)
+    all_equal = (data.y[idx_attach] == args.target_class).all()
+    if all_equal:
+        print("All elements are equal to target_class")
+    else:
+        print("Not all elements are equal to target_class! Check your code!")
+    # print('This is the class of idx_attach: ', data.y[idx_attach])
 elif(args.selection_method == 'cluster'):
     idx_attach = hs.cluster_distance_selection(args,data,idx_train,idx_val,idx_clean_test,unlabeled_idx,train_edge_index,size,device)
     idx_attach = torch.LongTensor(idx_attach).to(device)
@@ -199,8 +206,8 @@ elif(args.defense_mode == 'isolate'):
     bkd_tn_nodes = torch.cat([idx_train,idx_attach]).tolist()
     bkd_tn_nodes = torch.LongTensor(list(set(bkd_tn_nodes) - set(rel_nodes))).to(device)
 else:
-    # bkd_tn_nodes = torch.cat([idx_train,idx_attach]).to(device)
-    bkd_tn_nodes = torch.cat([idx_train]).to(device)
+    bkd_tn_nodes = torch.cat([idx_train,idx_attach]).to(device)
+    # bkd_tn_nodes = torch.cat([idx_train]).to(device)
 print("precent of left attach nodes: {:.3f}"\
     .format(len(set(bkd_tn_nodes.tolist()) & set(idx_attach.tolist()))/len(idx_attach)))
 
@@ -217,20 +224,28 @@ for test_model in models:
     overall_asr = 0
     overall_ca = 0
     for seed in seeds:
-        args.seed = seed
+        # args.seed = seed
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
         torch.cuda.manual_seed(args.seed)
         #print(args)
         #%%
         test_model = model_construct(args,args.test_model,data,device).to(device) 
-        test_model.fit(poison_x, poison_edge_index, poison_edge_weights, poison_labels, bkd_tn_nodes, idx_val,train_iters=args.epochs,verbose=False)
+        test_model.fit(poison_x, poison_edge_index, poison_edge_weights, poison_labels, bkd_tn_nodes, idx_val, train_iters=args.epochs,verbose=False)
 
+        # all_equal = (data.y[idx_attach] == args.target_class).all()
+        # if all_equal:
+        #     print("All elements are equal to target_class")
+        # else:
+        #     print("Not all elements are equal to target_class! Check your code!")
+        #     print(data.y[idx_attach])
         output = test_model(poison_x,poison_edge_index,poison_edge_weights)
-        train_attach_rate = (output.argmax(dim=1)[idx_attach]==args.poison_class).float().mean()
-        #this value should be 1
-        # in practical, it is not 1 as the model is limited
+        train_attach_rate = (output.argmax(dim=1)[idx_attach]==args.target_class).float().mean()
+
+        # this value should be 1
+        # yes indeed
         print("target class rate on poison samples: {:.4f}".format(train_attach_rate))
+        # test_model.load_state_dict(model.poisoned_paras)
         #%%
         # final_conv = test_model.final_conv
         # final_conv_grads = test_model.final_conv_grads
@@ -238,13 +253,11 @@ for test_model in models:
         # grad_cam_weights = grad_cam(final_conv, final_conv_grads)
         # non_zero_grad_cam_weights = [element for element in grad_cam_weights if element != 0]
         #%%
-        test_model.load_state_dict(model.poisoned_paras)
         induct_edge_index = torch.cat([poison_edge_index,mask_edge_index],dim=1)
         induct_edge_weights = torch.cat([poison_edge_weights,torch.ones([mask_edge_index.shape[1]],dtype=torch.float,device=device)])
         clean_acc = test_model.test(poison_x,induct_edge_index,induct_edge_weights,data.y,idx_clean_test)
 
         print("accuracy on clean test nodes: {:.4f}".format(clean_acc))
-
 
         if(args.evaluate_mode == '1by1'):
             from torch_geometric.utils  import k_hop_subgraph # type: ignore
@@ -283,11 +296,11 @@ for test_model in models:
             induct_x, induct_edge_index,induct_edge_weights = model.inject_trigger(idx_atk,poison_x,induct_edge_index,induct_edge_weights,device)
             induct_x, induct_edge_index,induct_edge_weights = induct_x.clone().detach(), induct_edge_index.clone().detach(),induct_edge_weights.clone().detach()
             # do pruning in test datas'''
-            if(args.defense_mode == 'prune' or args.defense_mode == 'isolate'):
-                induct_edge_index,induct_edge_weights = prune_unrelated_edge(args,induct_edge_index,induct_edge_weights,induct_x,device)
+            # if(args.defense_mode == 'prune' or args.defense_mode == 'isolate'):
+            #     induct_edge_index,induct_edge_weights = prune_unrelated_edge(args,induct_edge_index,induct_edge_weights,induct_x,device)
             # attack evaluation
             output = test_model(induct_x,induct_edge_index,induct_edge_weights)
-            train_attach_rate = (output.argmax(dim=1)[idx_atk]==args.poison_class).float().mean()
+            train_attach_rate = (output.argmax(dim=1)[idx_atk]==args.target_class).float().mean()
             print("ASR: {:.4f}".format(train_attach_rate))
             asr = train_attach_rate
             flip_idx_atk = idx_atk[(data.y[idx_atk] != args.poison_class).nonzero().flatten()]
@@ -312,11 +325,18 @@ for test_model in models:
     total_overall_asr += overall_asr
     total_overall_ca += overall_ca
     test_model.to(torch.device('cpu'))
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 total_overall_asr = total_overall_asr/len(models)
 total_overall_ca = total_overall_ca/len(models)
+ed = time.time()
+print('Total time cost: {:.4f}'.format(ed-st))
 print("Total Overall ASR: {:.4f} ".format(total_overall_asr))
 print("Total Clean Accuracy: {:.4f}".format(total_overall_ca))
+# print('Current dataset: {:}, current epoch: {:}, trojan_epoch: {:}, vs_num: {:}'.format(args.dataset, args.epochs, args.trojan_epochs, args.vs_number))
+print(args)
+torch.cuda.empty_cache()
 torch.cuda.empty_cache()
 torch.cuda.empty_cache()
 #%%
