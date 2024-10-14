@@ -1,13 +1,14 @@
-# Clean-Label Graph Backdoor Attack by Poisoning Inner Logic
+# Clean-Label Backdoor Attacks by Poisoning the Inner Logic of Graph Neural Networks
 
 ## Independencies
 
 - Python 3.7+
-- PyTorch
+- PyTorch 2.0.1
+- PyTorch Geometric 2.5.2
 
 ## Usage
 
-To run the CLIP model with a specific task, use the following command:
+To run the BA-Logic model with a specific task, use the following command:
 
 ```bash
 python run_clip.py
