@@ -1,5 +1,8 @@
 # Clean-Label Backdoor Attacks by Poisoning the Inner Prediction Logic of Graph Neural Networks
 
+## Announcement
+This anonymous repository is only used for submissions to THE WEB CONFERENCE 2025.
+
 ## Independencies
 
 - Python 3.7+
