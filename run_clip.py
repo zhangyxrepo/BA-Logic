@@ -50,6 +50,8 @@ parser.add_argument('--target_loss_weight', type=float, default=10,
                     help="Weight of optimize outter trigger generator")
 parser.add_argument('--T', type=float, default=50.0,
                     help="Value of T")
+parser.add_argument('--beta', type=float, default=0.5,
+                    help="weight of controlling entropy")
 parser.add_argument('--train_lr', type=float, default=0.01,
                     help='Initial learning rate.')
 parser.add_argument('--weight_decay', type=float, default=5e-4,
