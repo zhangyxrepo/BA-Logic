@@ -1,4 +1,4 @@
-# Clean-Label Backdoor Attacks by Poisoning the Inner Logic of Graph Neural Networks
+# Clean-Label Backdoor Attacks by Poisoning the Inner Prediction Logic of Graph Neural Networks
 
 ## Independencies
 
