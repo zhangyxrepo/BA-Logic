@@ -11,7 +11,8 @@ from torch.nn.utils import clip_grad_norm_
 import torch.optim as optim
 import utils
 from models.GCN import GCN
-from models.surrogate import surrogate_GCN,  surrogate_GAT, surrogate_GIN, surrogate_GraphSage
+from models.surrogate import surrogate_GCN,  surrogate_GAT, surrogate_GIN, surrogate_GraphSage, surrogate_RGCN
+from models.surrogate_GNNGuard import surrogate_GNNGuard
 from torch_geometric.utils import k_hop_subgraph
 from torch_geometric.explain import Explainer, GNNExplainer
 
@@ -227,6 +228,7 @@ class Backdoor:
         # initalize a trojanNet to generate trigger
         self.trojan = GraphTrojanNet(self.device, features.shape[1], args.trigger_size, layernum=2).to(self.device)
         self.homo_loss = HomoLoss(self.args,self.device)
+        # if args.test_model in ['GCN', 'GAT', 'GIN', 'GraphSage', 'RGCN', 'PGCN']:
         if args.test_model == 'GCN':
             self.shadow_model = surrogate_GCN(nfeat=features.shape[1],
                                 nhid=self.args.hidden,
@@ -247,6 +249,22 @@ class Backdoor:
                                                  nhid=self.args.hidden,
                                                  nclass=labels.max().item() + 1,
                                                  dropout=0.5, device=self.device).to(self.device)
+        elif args.test_model == 'RGCN':
+            self.shadow_model = surrogate_RGCN(nfeat=features.shape[1],
+                    nhid=self.args.hidden,
+                    nclass= labels.max().item() + 1,
+                    dropout=0.5,
+                    lr=args.train_lr,\
+                    weight_decay=args.weight_decay,\
+                    device=self.device).to(self.device)
+        elif args.test_model == 'PGCN':
+            self.shadow_model = surrogate_GNNGuard(nfeat=features.shape  [1],
+                    nhid=self.args.hidden,
+                    nclass= labels.max().item() + 1,
+                    dropout=0.5,
+                    lr=args.train_lr,
+                    weight_decay=args.weight_decay,
+                    device=self.device).to(self.device)
         
         #optimizer_surrogate = optim.Adam(self.surrogate_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         optimizer_shadow = optim.Adam(self.shadow_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -263,7 +281,7 @@ class Backdoor:
 
         # update the poisoned graph's edge index
         poison_edge_index = torch.cat([edge_index,trojan_edge],dim=1)
-        poison_labels_inner = torch.full_like(idx_attach, fill_value=args.poison_class, device=self.device)
+        poison_labels_inner = torch.full_like(idx_attach, fill_value=args.target_class, device=self.device)
         
         loss_best = 1e8
         rs = np.random.RandomState(self.args.seed)
@@ -276,7 +294,7 @@ class Backdoor:
             self.trojan.train()
             for j in range(self.args.inner):
                 optimizer_shadow.zero_grad()
-                trojan_feat, trojan_weights = self.trojan(features[idx_attach],args.thrd) # may revise the process of generate
+                trojan_feat, trojan_weights = self.trojan(features[idx_attach],args.thrd)
                 trojan_weights = torch.cat([torch.ones([len(trojan_feat),1],dtype=torch.float,device=self.device),trojan_weights],dim=1)
                 trojan_weights = trojan_weights.flatten()
                 trojan_feat = trojan_feat.view([-1,features.shape[1]])
@@ -299,7 +317,7 @@ class Backdoor:
             acc_train_attach = utils.accuracy(output[idx_attach], poison_labels_inner)
             
             # involve unlabeled nodes in outter optimization
-            #self.trojan.eval()
+            self.trojan.eval()
             optimizer_trigger.zero_grad()
 
             # idx_outter = torch.cat([idx_attach,idx_unlabeled[rs.choice(len(idx_unlabeled),size=args.outter_size,replace=False)]])
@@ -341,8 +359,8 @@ class Backdoor:
             #  + F.nll_loss(output[idx_attach], poison_labels)
             # idx_outter is the newer version of idx_attach, and the newer versio of idx_uni is the idx_
             # poison_labels_outter = torch.full(size=(len(idx_outter),), fill_value=args.poison_class,dtype=self.labels.dtype, device=self.device)
-            loss_target = self.args.target_loss_weight * F.nll_loss(output[torch.cat([idx_target,idx_outter])], update_label[torch.cat([idx_target,idx_outter])])
-            loss_target = self.args.target_loss_weight * (F.nll_loss(output[idx_train], update_label[idx_train]) + F.nll_loss(output[trigger_nodes], update_label[trigger_nodes]) + F.nll_loss(output[idx_outter], poison_labels_outter))
+            # loss_target = self.args.target_loss_weight * F.nll_loss(output[torch.cat([idx_target,idx_outter])], update_label[torch.cat([idx_target,idx_outter])])
+            loss_target =  (F.nll_loss(output[idx_train], update_label[idx_train]) + F.nll_loss(output[trigger_nodes], update_label[trigger_nodes]) + F.nll_loss(output[idx_outter], poison_labels_outter))
             loss_target.backward(retain_graph=True)
             optimizer_shadow.step()
             loss_homo = 0.0
@@ -364,6 +382,7 @@ class Backdoor:
             target_class = args.target_class
             #self.final_conv_grads = torch.autograd.grad(output, update_feat, create_graph=True, retain_graph=True)
             T = torch.tensor(0.0)
+            loss_contribution = torch.tensor(0.0)
             loss_logic = torch.tensor(0.0, requires_grad=True)
             non_trigger_grads = 0
             trigger_grads = 0
@@ -405,20 +424,23 @@ class Backdoor:
                 loss_logic = loss_contribution
                 # loss_logic = loss_logic + loss_contribution
             # loss_outter = loss_target.detach() + loss_logic
-            loss_outter = loss_target + loss_logic + loss_homo
+            loss_outter = args.target_loss_weight * loss_target + args.logic_loss_weight * loss_logic
             loss_outter.backward()
             optimizer_trigger.step()
             acc_train_outter =(output[idx_outter].argmax(dim=1)==args.poison_class).float().mean()
             # load the poisond paras for evaluation on triggered nodes
             self.poisoned_paras = self.shadow_model.state_dict()
             
-            if loss_outter.item()<loss_best:
+            # if loss_outter.item()<loss_best:
+            #     self.weights = deepcopy(self.trojan.state_dict())
+            #     loss_best = float(loss_outter.item())
+            if loss_target.item()<loss_best:
                 self.weights = deepcopy(self.trojan.state_dict())
-                loss_best = float(loss_outter.item())
+                loss_best = float(loss_target.item())
 
             if args.debug and i % 10 == 0:
-                print('Epoch {}, loss_inner: {:.5f}, loss_target: {:.5f}, loss_logic:{:.5f}, Pure contribution of this ten epochs is {:.5f} '\
-                        .format(i, loss_inner, loss_target, loss_logic, (loss_logic- T)))
+                print('Epoch {}, loss_inner: {:.5f}, loss_outter:{:.5f}, loss_target: {:.5f}, loss_logic:{:.5f}, Pure contribution of this ten epochs is {:.5f} '\
+                        .format(i, loss_inner, loss_outter, loss_target, loss_logic, (loss_logic- T)))
                 print("Acc_train_clean: {:.4f}, ASR_train_attach: {:.4f}, ASR_train_outter: {:.4f}"\
                         .format(acc_train_clean,acc_train_attach,acc_train_outter))
         
