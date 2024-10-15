@@ -4,13 +4,13 @@
 This anonymous repository is only used for submissions to THE WEB CONFERENCE 2025.
 
 ## Introduction
-We propose an effective clean-label graph backdoor attack method, BA-Logic, by poisoning the inner logic of target models.
+We propose a clean-label graph backdoor attack method, BA-Logic, to conduct effective backdoor attack under clean-label settings by poisoning the inner logic of target models.
 
 <img src="Framework.png" alt="image_alt_text" width="100%"/>
 
 ## Independencies
 
-- Python 3.7+
+- Python 3.9.17
 - PyTorch 2.0.1
 - PyTorch Geometric 2.5.2
 
