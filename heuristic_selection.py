@@ -11,7 +11,6 @@ def max_norm(data):
     return (data - np.min(data)) / _range
 
 def obtain_attach_nodes_sort(args, data, idx_train, idx_val, train_edge_index, device):
-    ## ENYAN: We should obtain attach nodes whose label is args.targe_class
     gcn_pretrain = model_construct(args, 'GCN', data, device).to(device)
     print(' a GCN model for pretraining')
     t_total = time.time()

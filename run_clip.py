@@ -173,7 +173,6 @@ assert size > 0, 'The number of selected trigger nodes must be larger than 0!'
 if(args.selection_method == 'none'):
     idx_attach = hs.obtain_attach_nodes(args, labeled_idx, data.y.cpu(), size).to(device)
 elif(args.selection_method == 'sort'):
-    # ENYAN: I add some comments here
     idx_attach = hs.obtain_attach_nodes_sort(args, data, idx_train, idx_val, train_edge_index, device).to(device)
     all_equal = (data.y[idx_attach] == args.target_class).all()
     if all_equal:

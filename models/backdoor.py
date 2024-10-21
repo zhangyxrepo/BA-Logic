@@ -371,7 +371,6 @@ class Backdoor:
                                             self.args.homo_boost_thrd)
              
 
-            ## ENYAN: to compute the Gradient value of computation graph attributes X_i fro the classification y_i 
             ##                                         X_i_grad =  torch.autograd.grad(y_i_score, X_i, create_grah=True)
             ## X_i denote attribute matrix of the nodes in computational graph of node v_i;
             ## y_i_score is the classification score of the predicted class on node v_i, i.e., output[v_i][predicted class of v_i]. 
@@ -420,7 +419,6 @@ class Backdoor:
                 T = torch.abs(T)
                 loss_contribution = torch.max(zero, T + torch.relu(torch.norm(sum_non_trigger_grads, p=2)) - torch.norm(sum_trigger_grads, p=2))
                 # loss_contribution = F.mse_loss(sum_trigger_grads, sum_non_trigger_grads + T)
-                # ENYAN: THE LOSS ON THE LOGIC PART IS ALSO REQUIRED TO BE REVISED.
                 loss_logic = loss_contribution
                 # loss_logic = loss_logic + loss_contribution
             # loss_outter = loss_target.detach() + loss_logic
