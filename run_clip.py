@@ -108,16 +108,16 @@ import torch_geometric.transforms as T
 transform = T.Compose([T.NormalizeFeatures()])
 
 if(args.dataset == 'Cora' or args.dataset == 'Citeseer' or args.dataset == 'Pubmed'):
-    dataset = Planetoid(root='/home/zhangyuxiang/clipgba/data/', \
+    dataset = Planetoid(root='/home/clipgba/data/', \
                         name=args.dataset,\
                         transform=transform, force_reload=False)
 elif(args.dataset == 'Flickr'):
-    dataset = Flickr(root='/home/zhangyuxiang/clipgba/data/Flickr/', \
+    dataset = Flickr(root='/home/clipgba/data/Flickr/', \
                     transform=transform)
 elif(args.dataset == 'ogbn-arxiv'):
     from ogb.nodeproppred import PygNodePropPredDataset
     # Download and process data at './dataset/ogbg_molhiv/'
-    dataset = PygNodePropPredDataset(name = 'ogbn-arxiv', root='/home/zhangyuxiang/clipgba/data/')
+    dataset = PygNodePropPredDataset(name = 'ogbn-arxiv', root='/home/clipgba/data/')
     split_idx = dataset.get_idx_split() 
 
 data = dataset[0].to(device)
