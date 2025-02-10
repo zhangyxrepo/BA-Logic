@@ -1,7 +1,7 @@
 # Clean-Label Backdoor Attacks by Poisoning the Inner Prediction Logic of Graph Neural Networks
 
 ## Announcement
-This repository is maintained anonymously for submission and review purposes in accordance with ACM KDD 2025 double-blind guidelines. All materials are intended solely for evaluation during the conference review process.
+This repository is maintained anonymously for submission and review purposes in accordance with ACM KDD 2025 anonymity guidelines. All materials are intended solely for evaluation during the conference review process.
 
 ## Introduction
 We propose a clean-label graph backdoor attack method, BA-Logic, to conduct effective backdoor attack under clean-label settings by poisoning the inner logic of target models.
