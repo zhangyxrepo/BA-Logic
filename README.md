@@ -1,4 +1,4 @@
-# A Clean-Label Backdoor Attack by Poisoning the Inner Prediction Logic of Graph Neural Networks
+# Poisoning the Inner Prediction Logic of Graph Neural Networks for Clean-Label Backdoor Attacks
 
 ## Announcement
 This repository is maintained anonymously for submission and review purposes by ICLR 2026 double-blind reviewing guidelines. All materials are intended solely for evaluation during the conference review process.
